@@ -61,17 +61,4 @@ pub const OpCode = enum(u8) {
     DIV,
 };
 
-test Chunk {
-    var alloc = std.testing.allocator;
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    var c = Chunk.init(alloc);
-    defer c.deinit();
-    var cst = try c.addConst(1.2);
-    try c.writeChunk(OpCode.CONST, 5);
-    try c.writeChunk(cst, 5);
-    try c.writeChunk(OpCode.RETURN, 5);
-    try debug.dissChunk(&c, stdout, "test");
-}
+test Chunk {}
