@@ -1,17 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Chunk = @import("chunk.zig").Chunk;
-const OpCode = @import("chunk.zig").OpCode;
-const Value = @import("value.zig").Value;
+const lx = @import("zlox.zig");
 
 const StackMax = 512;
 
 pub const VM = struct {
     alloc: Allocator,
-    chunk: *Chunk,
+    chunk: *lx.Chunk,
     ip: [*]u8 = undefined,
-    sp: [*]Value = undefined,
-    stack: [StackMax]Value = [_]Value{0} ** StackMax,
+    sp: [*]lx.Value = undefined,
+    stack: [StackMax]lx.Value = [_]lx.Value{0} ** StackMax,
 
     const Self = @This();
     pub fn init(alloc: Allocator) Self {
@@ -29,14 +27,20 @@ pub const VM = struct {
         _ = s;
     }
 
-    pub fn interpret(s: *Self, chunk: *Chunk) void {
-        s.ip = chunk.code.ptr;
-        s.chunk = chunk;
+    pub fn interpret(s: *Self, src: [:0]const u8) !void {
+        var c = lx.Chunk.init(s.alloc);
+        var cp = lx.Compiler.init(s.alloc, src, &c);
+        var cpp = &cp;
+        _ = try cpp.compile();
+        errdefer c.deinit();
+
+        s.ip = c.code.ptr;
+        s.chunk = &c;
     }
 
     pub fn run(s: *Self) !void {
         outer: while (true) {
-            const instr: OpCode = @enumFromInt(s.incp());
+            const instr: lx.OpCode = @enumFromInt(s.incp());
             switch (instr) {
                 inline .ADD, .SUB, .MUL, .DIV => |op| s.binOp(op),
                 .CONST => {
@@ -53,7 +57,7 @@ pub const VM = struct {
         }
     }
 
-    fn binOp(s: *Self, op: OpCode) void {
+    fn binOp(s: *Self, op: lx.OpCode) void {
         var b = s.pop();
         var a = s.pop();
 
@@ -68,7 +72,7 @@ pub const VM = struct {
         s.push(res);
     }
 
-    fn readConst(s: *Self) Value {
+    fn readConst(s: *Self) lx.Value {
         return s.chunk.vals.items[s.incp()];
     }
 
@@ -81,14 +85,25 @@ pub const VM = struct {
     pub fn resetStack(s: *Self) u8 {
         s.sp = &s.stack;
     }
-    fn pop(s: *Self) Value {
+    fn pop(s: *Self) lx.Value {
         s.sp -= 1;
         return s.sp[0];
     }
 
-    fn push(s: *Self, v: Value) void {
+    fn push(s: *Self, v: lx.Value) void {
         // todo overflow
         s.sp[0] = v;
         s.sp += 1;
     }
 };
+
+test VM {
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = false }){};
+    var alloc = gpa.allocator();
+    defer _ = gpa.deinit();
+    var vm = VM.init(alloc);
+    defer vm.deinit();
+
+    try vm.interpret("(-1 + 2) * 3 - -4");
+    try vm.run();
+}

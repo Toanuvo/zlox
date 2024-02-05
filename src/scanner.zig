@@ -23,6 +23,7 @@ pub const Scanner = struct {
             return s.makeToken(.EOF);
         }
         const c = s.adv();
+        //std.debug.print("got c: {c}\n", .{c});
         return switch (c) {
             '(' => s.makeToken(.LPAR),
             ')' => s.makeToken(.RPAR),
@@ -79,7 +80,7 @@ pub const Scanner = struct {
         }
 
         return .{
-            .tp = .STRING,
+            .tp = .NUM,
             .val = s.txt[s.start..s.cur],
             .line = s.line,
         };
@@ -236,7 +237,13 @@ pub const TokenType = enum(u8) {
     }
 };
 
-test Scanner {
+test "test scanner matches keywords" {
     var sc = Scanner.init(std.testing.allocator, "false");
     try std.testing.expectEqual(TokenType.FALSE, sc.ntok().tp);
+}
+test "scanner simple" {
+    var sc = Scanner.init(std.testing.allocator, "1 + 1");
+    try std.testing.expectEqual(TokenType.NUM, sc.ntok().tp);
+    try std.testing.expectEqual(TokenType.PLUS, sc.ntok().tp);
+    try std.testing.expectEqual(TokenType.NUM, sc.ntok().tp);
 }
