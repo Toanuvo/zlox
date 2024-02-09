@@ -16,9 +16,9 @@ fn dissInstr(s: *const Chunk, stream: anytype, offset: usize) !usize {
     } else {
         try stream.print("{d:0>4} ", .{s.lines[offset]});
     }
-    var instr = s.code[offset];
+    const instr = s.code[offset];
     if (instr < 256) {
-        var op: OpCode = @enumFromInt(instr);
+        const op: OpCode = @enumFromInt(instr);
         return switch (op) {
             .RETURN,
             .ADD,

@@ -22,7 +22,7 @@ pub const Chunk = struct {
     }
 
     pub fn writeChunk(s: *Self, v: anytype, line: u64) !void {
-        var byte: u8 = switch (@TypeOf(v)) {
+        const byte: u8 = switch (@TypeOf(v)) {
             OpCode => @intFromEnum(v),
             usize => @intCast(v),
             else => unreachable,
@@ -59,6 +59,22 @@ pub const OpCode = enum(u8) {
     SUB,
     MUL,
     DIV,
+    NIL,
+    TRUE,
+    FALSE,
+    NOT,
+    EQL,
+    GTR,
+    LESS,
 };
 
-test Chunk {}
+test Chunk {
+    const tup = .{ .RETURN, .ADD };
+    try tst(&tup);
+}
+
+fn tst(comptime ops: []const OpCode) !void {
+    for (ops) |value| {
+        std.debug.print("returned: {any}\n", .{value});
+    }
+}
