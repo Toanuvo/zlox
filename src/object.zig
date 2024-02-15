@@ -103,7 +103,7 @@ pub const String = struct {
     }
 
     pub fn destroy(s: *Self, alloc: Allocator) void {
-        alloc.free(s.chars);
+        //alloc.free(s.chars); // all strings are interned so this object never owns the string
         alloc.destroy(s);
     }
 };

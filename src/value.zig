@@ -37,4 +37,18 @@ pub const Value = union(ValueTag) {
             else => false,
         };
     }
+    pub fn format(s: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        switch (s) {
+            .Obj => |o| {
+                if (o.is(lx.String)) {
+                    try writer.print("\"{s}\"", .{o.as(lx.String).chars});
+                } else {
+                    try writer.print("{any}", .{s});
+                }
+            },
+            else => {
+                try writer.print("{any}", .{s});
+            },
+        }
+    }
 };

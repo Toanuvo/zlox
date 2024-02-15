@@ -27,11 +27,77 @@ pub const Compiler = struct {
         var sc = lx.Scanner.init(s.alloc, s.src);
         s.scnr = &sc;
         s.advance();
-        try s.expr();
+
+        while (!s.mt(.EOF)) {
+            try s.decl();
+        }
 
         try s.consume(.EOF, "expect end of expr");
         try s.emitOp(.RETURN);
         return !s.hadError;
+    }
+
+    pub fn decl(s: *Self) !void {
+        if (s.mt(.VAR)) {
+            try s.varDecl();
+        } else {
+            try s.stmt();
+        }
+        if (s.panicMode) s.sync();
+    }
+
+    pub fn varDecl(s: *Self) !void {
+        const global = try s.parseVar("expect variable name");
+
+        if (s.mt(.EQL)) {
+            try s.expr();
+        } else {
+            try s.emitOp(.NIL);
+        }
+
+        try s.consume(.SEMICOL, "expect ; after variable decl");
+        try s.defineVar(global);
+    }
+
+    pub fn defineVar(s: *Self, global: usize) !void {
+        try s.emitOp(.DEF_GLOB);
+        try s.emitByte(global);
+    }
+
+    pub fn parseVar(s: *Self, errmsg: [:0]const u8) !usize {
+        try s.consume(.IDENT, errmsg);
+        return try s.identConst(s.prev);
+    }
+
+    pub fn identConst(s: *Self, name: lx.Token) !usize {
+        const str = try lx.String.allocString(s.vm, s.alloc, name.val.?);
+        return s.makeConst(.{ .Obj = &str.obj });
+    }
+
+    pub fn stmt(s: *Self) !void {
+        if (s.mt(.PRINT)) {
+            try s.printStmt();
+        } else {
+            try s.exprStmt();
+        }
+    }
+
+    pub fn exprStmt(s: *Self) !void {
+        try s.expr();
+        try s.consume(.SEMICOL, "expect ; after expression");
+        try s.emitOp(.POP);
+    }
+
+    pub fn printStmt(s: *Self) !void {
+        try s.expr();
+        try s.consume(.SEMICOL, "expect ; after print");
+        try s.emitOp(.PRINT);
+    }
+
+    pub fn mt(s: *Self, t: lx.TokenType) bool {
+        if (s.cur.tp != t) return false;
+        s.advance();
+        return true;
     }
 
     pub fn expr(s: *Self) !void {
@@ -41,8 +107,9 @@ pub const Compiler = struct {
     pub fn parsePrec(s: *Self, prec: Precedence) !void {
         s.advance();
         const prefix = rules.get(s.prev.tp).prefix;
+        const canAssign = @intFromEnum(prec) <= @intFromEnum(Precedence.ASSIGNMENT);
         if (prefix) |r| {
-            try r(s);
+            try r(s, canAssign);
         } else {
             try s.displayErr(&s.prev, "expect expression");
         }
@@ -50,11 +117,12 @@ pub const Compiler = struct {
         while (@intFromEnum(prec) <= @intFromEnum(rules.get(s.cur.tp).prec)) {
             s.advance();
             const infix = rules.get(s.prev.tp).infix.?;
-            try infix(s);
+            try infix(s, canAssign);
         }
+        if (canAssign and s.mt(.EQL)) try s.displayErr(&s.prev, "invalid aSSIGNMENT target");
     }
 
-    pub fn binary(s: *Self) !void {
+    pub fn binary(s: *Self, _: bool) !void {
         const optp = s.prev.tp;
         var rule = rules.get(optp);
         try s.parsePrec(rule.prec.next());
@@ -73,7 +141,7 @@ pub const Compiler = struct {
         }
     }
 
-    pub fn unary(s: *Self) !void {
+    pub fn unary(s: *Self, _: bool) !void {
         const op = s.prev.tp;
         try s.parsePrec(.UNARY);
         switch (op) {
@@ -83,17 +151,33 @@ pub const Compiler = struct {
         }
     }
 
-    pub fn grouping(s: *Self) !void {
+    pub fn grouping(s: *Self, _: bool) !void {
         try s.expr();
         try s.consume(.RPAR, "expect ')' after expr");
     }
 
-    pub fn number(s: *Self) !void {
+    pub fn namedVar(s: *Self, name: lx.Token, canAssign: bool) !void {
+        const arg = try s.identConst(name);
+        if (canAssign and s.mt(.EQL)) {
+            try s.expr();
+            try s.emitOp(.SET_GLOB);
+            try s.emitByte(arg);
+        } else {
+            try s.emitOp(.GET_GLOB);
+            try s.emitByte(arg);
+        }
+    }
+
+    pub fn variable(s: *Self, canAssign: bool) !void {
+        try s.namedVar(s.prev, canAssign);
+    }
+
+    pub fn number(s: *Self, _: bool) !void {
         const v = try std.fmt.parseFloat(std.meta.FieldType(lx.Value, .Num), s.prev.val.?);
         try s.emitConst(.{ .Num = v });
     }
 
-    pub fn literal(s: *Self) !void {
+    pub fn literal(s: *Self, _: bool) !void {
         switch (s.prev.tp) {
             .TRUE => try s.emitOp(.TRUE),
             .FALSE => try s.emitOp(.FALSE),
@@ -102,7 +186,7 @@ pub const Compiler = struct {
         }
     }
 
-    pub fn string(s: *Self) !void {
+    pub fn string(s: *Self, _: bool) !void {
         var str = try lx.String.allocString(s.vm, s.alloc, s.prev.val.?);
         try s.emitConst(.{ .Obj = &str.obj });
     }
@@ -151,6 +235,26 @@ pub const Compiler = struct {
         }
     }
 
+    fn sync(s: *Self) void {
+        s.panicMode = false;
+        while (s.cur.tp != .EOF) {
+            if (s.prev.tp == .SEMICOL) return;
+            switch (s.cur.tp) {
+                .CLASS,
+                .FUN,
+                .VAR,
+                .FOR,
+                .IF,
+                .WHILE,
+                .PRINT,
+                .RETURN,
+                => return,
+                else => {},
+            }
+            s.advance();
+        }
+    }
+
     // todo use zig errors
     pub fn displayErr(s: *Self, tok: *lx.Token, msg: [:0]const u8) !void {
         if (s.panicMode) return;
@@ -170,7 +274,7 @@ pub const Compiler = struct {
         s.hadError = true;
     }
 
-    const ParseFn = *const fn (s: *Self) anyerror!void;
+    const ParseFn = *const fn (s: *Self, canAssign: bool) anyerror!void;
     const ParseRule = struct {
         prefix: ?ParseFn,
         infix: ?ParseFn,
@@ -205,6 +309,7 @@ pub const Compiler = struct {
         rls.set(.LESS, ParseRule.of(null, &Self.binary, .COMPARISON));
         rls.set(.LESS_EQL, ParseRule.of(null, &Self.binary, .COMPARISON));
         rls.set(.STRING, ParseRule.of(&Self.string, null, .NONE));
+        rls.set(.IDENT, ParseRule.of(&Self.variable, null, .NONE));
         break :blk rls;
     };
 };

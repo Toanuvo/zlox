@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const mem = @import("memory.zig");
 const Value = @import("value.zig").Value;
 const debug = @import("debug.zig");
+const OpCode = @import("vm.zig").OpCode;
 
 const ValueArr = std.ArrayList(Value);
 
@@ -49,23 +50,6 @@ pub const Chunk = struct {
         s.vals.deinit();
         // do i need to zero fields?
     }
-};
-
-pub const OpCode = enum(u8) {
-    RETURN,
-    CONST,
-    NEGATE,
-    ADD,
-    SUB,
-    MUL,
-    DIV,
-    NIL,
-    TRUE,
-    FALSE,
-    NOT,
-    EQL,
-    GTR,
-    LESS,
 };
 
 test Chunk {
