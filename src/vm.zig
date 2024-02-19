@@ -13,22 +13,19 @@ pub const VM = struct {
     chunk: *lx.Chunk,
     ip: [*]u8 = undefined,
     sp: [*]lx.Value = undefined,
-    stack: [StackMax]lx.Value = [_]lx.Value{lx.Value.Nil} ** StackMax,
     objects: ?*lx.Obj,
     strings: lx.StrMap,
     globals: std.StringHashMap(lx.Value),
+    stack: [StackMax]lx.Value = [_]lx.Value{lx.Value.Nil} ** StackMax,
 
     const Self = @This();
-    pub fn init(alloc: Allocator) Self {
-        var s: Self = .{
-            .alloc = alloc,
-            .sp = undefined,
-            .chunk = undefined,
-            .objects = null,
-            .strings = lx.StrMap.init(alloc),
-            .globals = std.StringHashMap(lx.Value).init(alloc),
-        };
-
+    pub fn init(alloc: Allocator) !*Self {
+        var s = try alloc.create(Self);
+        s.alloc = alloc;
+        s.chunk = undefined;
+        s.objects = null;
+        s.strings = lx.StrMap.init(alloc);
+        s.globals = std.StringHashMap(lx.Value).init(alloc);
         s.sp = &s.stack;
         return s;
     }
@@ -55,10 +52,12 @@ pub const VM = struct {
     }
 
     pub fn run(s: *Self) !void {
+        s.sp = &s.stack;
         outer: while (true) {
             const instr: OpCode = @enumFromInt(s.incp());
 
             //std.debug.print("instr: {any}\n", .{instr});
+            //std.debug.print("stack: {any}\n", .{s.sp[0]});
             switch (instr) {
                 .PRINT => {
                     std.debug.print("{any}\n", .{s.pop()}); // todo stdio
@@ -82,6 +81,7 @@ pub const VM = struct {
                 inline .GTR, .LESS => |op| try s.binOp(op, .Bool),
                 .CONST => {
                     const con = s.readConst();
+                    //std.debug.print("const: {any}\n", .{con});
                     s.push(con);
                 },
                 .NEGATE => switch (s.peek(0)) {
@@ -110,7 +110,7 @@ pub const VM = struct {
                     if (s.globals.getPtr(name.chars)) |v| {
                         v.* = s.peek(0);
                     } else {
-                        try s.runtimeError("undefined variable");
+                        try s.runtimeError("undefined global variable");
                         std.debug.print(" {s}\n", .{name.chars});
                     }
                 },
@@ -119,9 +119,17 @@ pub const VM = struct {
                     if (s.globals.get(str.chars)) |v| {
                         s.push(v);
                     } else {
-                        try s.runtimeError("undefinded variable");
+                        try s.runtimeError("undefind global variable");
                         std.debug.print(" {s}\n", .{str.chars});
                     }
+                },
+                .SET_LOCAL => {
+                    const slot = s.incp();
+                    s.stack[slot] = s.peek(0);
+                },
+                .GET_LOCAL => {
+                    const slot: usize = s.incp();
+                    s.push(s.stack[slot]);
                 },
                 .EQL => {
                     const b = s.pop();
@@ -205,7 +213,10 @@ pub const VM = struct {
                 @panic("tried to push unexpected value type onto stack");
             },
         };
+
         // todo overflow
+        //std.debug.print("got type: {s}\n", .{@typeName(@TypeOf(v))});
+        //std.debug.print("setting: {any}\n", .{std.meta.activeTag(s.stack[S.spp])});
         s.sp += 1;
     }
 
@@ -237,6 +248,8 @@ pub const OpCode = enum(u8) {
     DEF_GLOB,
     GET_GLOB,
     SET_GLOB,
+    GET_LOCAL,
+    SET_LOCAL,
     CONST,
     NEGATE,
     PRINT,
@@ -259,17 +272,21 @@ test VM {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = false }){};
     const alloc = gpa.allocator();
     defer _ = gpa.deinit();
-    var vm = VM.init(alloc);
+    var vm = try VM.init(alloc);
     //defer vm.deinit();
 
     //const tst = "!(5 - 4 > 3 * 2 == !nil)";
     //const tst = "\"hello\"==\"hello\"";
     //const tst = "print 1+1;";
-    const tst = "var beverage = \"cafe au lait\";\n var breakfast = \"beignets\";\n breakfast = \"beignets with \"+ beverage;\n print breakfast;";
+    const tst = "{" ++
+        "var beverage = \"cafe au lait\";\n" ++
+        "var breakfast = \"beignets\";\n" ++
+        "breakfast = \"beignets with \"+ beverage;\n" ++
+        "print breakfast;}";
 
     //try vm.interpret("!(5 - 4 > 3 * 2 == !nil)");
     var c = lx.Chunk.init(alloc);
-    var cp = lx.Compiler.init(alloc, &vm, tst, &c);
+    var cp = lx.Compiler.init(alloc, vm, tst, &c);
     var cpp = &cp;
     _ = try cpp.compile();
     errdefer c.deinit();

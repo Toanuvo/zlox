@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lx = @import("zlox.zig");
+const maxInt = std.math.maxInt;
 
 pub const Compiler = struct {
     cur: lx.Token = undefined,
@@ -12,6 +13,7 @@ pub const Compiler = struct {
     src: [:0]const u8,
     chunk: *lx.Chunk,
     vm: *lx.VM,
+    current: ScopeCompiler,
 
     const Self = @This();
     pub fn init(alloc: Allocator, vm: *lx.VM, src: [:0]const u8, c: *lx.Chunk) Self {
@@ -20,6 +22,7 @@ pub const Compiler = struct {
             .src = src,
             .alloc = alloc,
             .vm = vm,
+            .current = .{},
         };
     }
 
@@ -37,7 +40,7 @@ pub const Compiler = struct {
         return !s.hadError;
     }
 
-    pub fn decl(s: *Self) !void {
+    pub fn decl(s: *Self) anyerror!void {
         if (s.mt(.VAR)) {
             try s.varDecl();
         } else {
@@ -60,13 +63,52 @@ pub const Compiler = struct {
     }
 
     pub fn defineVar(s: *Self, global: usize) !void {
+        if (s.current.scopeDepth > 0) {
+            s.markInit();
+            return;
+        }
         try s.emitOp(.DEF_GLOB);
         try s.emitByte(global);
     }
 
+    pub fn markInit(s: *Self) void {
+        s.current.locals[s.current.localCount].depth = s.current.scopeDepth;
+    }
+
     pub fn parseVar(s: *Self, errmsg: [:0]const u8) !usize {
         try s.consume(.IDENT, errmsg);
+        try s.declareVar();
+        if (s.current.scopeDepth > 0) return 0;
         return try s.identConst(s.prev);
+    }
+
+    pub fn declareVar(s: *Self) !void {
+        if (s.current.scopeDepth == 0) return;
+
+        const name = s.prev;
+
+        for (s.current.locals[s.current.localCount..]) |local| {
+            if (local.depth != null and local.depth.? < s.current.scopeDepth) { // local.depth != -1
+                break;
+            }
+
+            if (std.meta.eql(name, local.name)) {
+                try s.displayErr(&local.name, "already a variable with this name in this scope");
+            }
+        }
+        try s.addLocal(name);
+    }
+
+    pub fn addLocal(s: *Self, name: lx.Token) !void {
+        if (s.current.localCount == 0) {
+            try s.displayErr(&name, "too many local variables in function");
+        }
+        s.current.localCount -= 1;
+        const local = &s.current.locals[s.current.localCount];
+        local.* = .{
+            .name = name,
+            .depth = null,
+        };
     }
 
     pub fn identConst(s: *Self, name: lx.Token) !usize {
@@ -77,9 +119,39 @@ pub const Compiler = struct {
     pub fn stmt(s: *Self) !void {
         if (s.mt(.PRINT)) {
             try s.printStmt();
+        } else if (s.mt(.LBRACE)) {
+            try s.beginScope();
+            try s.block();
+            try s.endScope();
         } else {
             try s.exprStmt();
         }
+    }
+
+    pub fn beginScope(s: *Self) !void {
+        s.current.scopeDepth += 1;
+    }
+
+    pub fn endScope(s: *Self) !void {
+        s.current.scopeDepth -= 1;
+
+        for (s.current.locals[s.current.localCount..]) |local| {
+            if (local.depth) |depth| {
+                if (depth > s.current.scopeDepth) {
+                    break;
+                }
+            }
+            try s.emitOp(.POP);
+            s.current.localCount += 1;
+        }
+    }
+
+    pub fn block(s: *Self) !void {
+        while (s.cur.tp != .RBRACE and s.cur.tp != .EOF) {
+            try s.decl();
+        }
+
+        try s.consume(.RBRACE, "expect }} after block");
     }
 
     pub fn exprStmt(s: *Self) !void {
@@ -157,15 +229,52 @@ pub const Compiler = struct {
     }
 
     pub fn namedVar(s: *Self, name: lx.Token, canAssign: bool) !void {
-        const arg = try s.identConst(name);
+        const Variable = struct {
+            arg: usize,
+            setOp: lx.OpCode,
+            getOp: lx.OpCode,
+        };
+
+        const varb: Variable = if (try s.resolveLocal(name)) |loc| b: {
+            break :b .{
+                .arg = loc,
+                .setOp = .SET_LOCAL,
+                .getOp = .GET_LOCAL,
+            };
+        } else b: {
+            const arg = try s.identConst(name);
+            break :b .{
+                .arg = arg,
+                .setOp = .SET_GLOB,
+                .getOp = .GET_GLOB,
+            };
+        };
+
+        //std.debug.print("VAR {any}\n", .{varb});
+
         if (canAssign and s.mt(.EQL)) {
             try s.expr();
-            try s.emitOp(.SET_GLOB);
-            try s.emitByte(arg);
+            try s.emitOp(varb.setOp);
+            try s.emitByte(varb.arg);
         } else {
-            try s.emitOp(.GET_GLOB);
-            try s.emitByte(arg);
+            try s.emitOp(varb.getOp);
+            try s.emitByte(varb.arg);
         }
+    }
+
+    pub fn resolveLocal(s: *Self, name: lx.Token) !?usize {
+        for (s.current.locals[s.current.localCount..], s.current.localCount..) |local, i| {
+            if (local.depth != null and local.depth.? < s.current.scopeDepth) { // local.depth != -1
+                break;
+            }
+
+            if (name.tp == local.name.tp and std.mem.eql(u8, name.val.?, local.name.val.?)) {
+                if (local.depth == null) try s.displayErr(&name, "cant read local variable from its own initializer");
+
+                return (maxInt(u8) - i) - 1;
+            }
+        }
+        return null;
     }
 
     pub fn variable(s: *Self, canAssign: bool) !void {
@@ -230,6 +339,7 @@ pub const Compiler = struct {
         s.prev = s.cur;
         while (true) {
             s.cur = s.scnr.ntok();
+            //std.debug.print("tok: {any}\n", .{s.cur});
             if (s.cur.tp != lx.TokenType.ERROR) break;
             //s.displayErr()
         }
@@ -256,7 +366,7 @@ pub const Compiler = struct {
     }
 
     // todo use zig errors
-    pub fn displayErr(s: *Self, tok: *lx.Token, msg: [:0]const u8) !void {
+    pub fn displayErr(s: *Self, tok: *const lx.Token, msg: [:0]const u8) !void {
         if (s.panicMode) return;
         s.panicMode = true;
         var stderr = std.io.getStdErr().writer();
@@ -335,6 +445,18 @@ const Precedence = enum(u8) {
             return @enumFromInt(1 + @intFromEnum(s));
         }
     }
+};
+
+const ScopeCompiler = struct {
+    // array grows down
+    locals: [maxInt(u8)]Local = [_]Local{undefined} ** maxInt(u8),
+    localCount: usize = maxInt(u8), // points to the last local or off the top/end of the array
+    scopeDepth: usize = 0,
+};
+
+const Local = struct {
+    name: lx.Token,
+    depth: ?usize,
 };
 
 test Compiler {}
