@@ -139,10 +139,13 @@ pub const VM = struct {
                 },
                 .JMP_IF_FALSE => {
                     const offset = s.read(u16);
+                    //std.debug.print("read {any}\n", .{offset});
                     if (s.peek(0).isFalsey()) s.ip += offset;
                 },
                 .JMP => {
-                    s.ip += s.read(u16);
+                    const i = s.read(u16);
+                    //std.debug.print("read {any}\n", .{i});
+                    s.ip += i;
                 },
                 .LOOP => {
                     s.ip -= s.read(u16);
@@ -178,6 +181,7 @@ pub const VM = struct {
 
     fn binOp(s: *Self, op: lx.OpCode, comptime resType: lx.ValueTag) !void {
         if (!s.peek(0).is(.Num) or !s.peek(1).is(.Num)) {
+            std.debug.print("got type: {any}\n", .{s.peek(0)});
             try s.runtimeError("operands must be numbers");
             return error.IncorrectOperandTypes;
         }
@@ -305,10 +309,11 @@ test VM {
     //const tst = "\"hello\"==\"hello\"";
     //const tst = "print 1+1;";
     const tst =
-        "var beverage = \"cafe au lait\";\n" ++
+        //"var beverage = \"cafe au lait\";\n" ++
         "var breakfast = \"beignets\";\n" ++
-        "for (var i; i < 5; i += 1) {\n" ++
-        "breakfast = \"beignets with \"+ beverage;\n" ++
+        "if(true){\n" ++
+        //"for (var i = 0; i < 5; i = i + 1) {\n" ++
+        //"breakfast = \"beignets with \"+ beverage;\n" ++
         "print breakfast;}";
 
     //try vm.interpret("!(5 - 4 > 3 * 2 == !nil)");

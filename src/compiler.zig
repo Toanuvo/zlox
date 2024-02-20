@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const lx = @import("zlox.zig");
 const maxInt = std.math.maxInt;
 const mem = std.mem;
+const Endianess = @import("builtin").cpu.arch.endian();
 
 pub const Compiler = struct {
     cur: lx.Token = undefined,
@@ -220,12 +221,19 @@ pub const Compiler = struct {
     pub fn emitJump(s: *Self, op: lx.OpCode) !usize {
         try s.emitOp(op);
         try s.emitInt(u16, 0, null);
+
         return s.curChunk().cap - 2;
     }
 
-    pub fn patchJMP(s: *Self, offset: usize) !void {
-        if (std.math.cast(u16, s.curChunk().cap - offset - 2)) |jmp| {
-            try s.emitInt(u16, jmp, offset);
+    pub fn patchJMP(s: *Self, loc: usize) !void {
+        // dont need -2 because of how emitInt / read is implemented?
+        if (std.math.cast(u16, (s.curChunk().cap - loc) - 2)) |jmp| {
+            try s.emitInt(u16, jmp, loc);
+
+            //const ch = s.curChunk();
+            //const buf: *[2]u8 = @ptrCast(ch.code[loc .. loc + 2].ptr);
+            //const i = std.mem.readInt(u16, buf, Endianess);
+            //std.debug.print("exp: {any}, act: {any}\n", .{ jmp, i });
         } else {
             try s.displayErr(&s.prev, "too long jump");
         }

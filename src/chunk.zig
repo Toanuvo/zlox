@@ -37,12 +37,14 @@ pub const Chunk = struct {
             s.lines = try mem.realloc(s.alloc, s.lines, newCap);
         }
 
+        //std.debug.print("write {any} {any}\n", .{ s.cap, v });
         s.code[s.cap] = byte;
         s.lines[s.cap] = line;
         s.cap += 1;
     }
 
     pub fn writeInt(s: *Self, comptime T: type, v: T, line: u64, offset: ?usize) !void {
+        //std.debug.print("write {any}\n", .{v});
         const len = @sizeOf(T);
         const idx = offset orelse s.cap;
         if (s.code.len < idx + len) {
@@ -56,8 +58,7 @@ pub const Chunk = struct {
         for (s.lines[idx .. idx + len]) |*l| {
             l.* = line;
         }
-
-        s.cap += len;
+        if (offset == null) s.cap += len;
     }
 
     pub fn addConst(s: *Self, v: Value) !usize {
