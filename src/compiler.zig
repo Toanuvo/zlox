@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lx = @import("zlox.zig");
 const maxInt = std.math.maxInt;
+const mem = std.mem;
 
 pub const Compiler = struct {
     cur: lx.Token = undefined,
@@ -116,15 +117,117 @@ pub const Compiler = struct {
         return s.makeConst(.{ .Obj = &str.obj });
     }
 
-    pub fn stmt(s: *Self) !void {
+    pub fn stmt(s: *Self) anyerror!void {
         if (s.mt(.PRINT)) {
             try s.printStmt();
+        } else if (s.mt(.IF)) {
+            try s.ifStmt();
+        } else if (s.mt(.WHILE)) {
+            try s.whileStmt();
+        } else if (s.mt(.FOR)) {
+            try s.forStmt();
         } else if (s.mt(.LBRACE)) {
             try s.beginScope();
             try s.block();
             try s.endScope();
         } else {
             try s.exprStmt();
+        }
+    }
+
+    pub fn ifStmt(s: *Self) !void {
+        try s.consume(.LPAR, "expect ( after if");
+        try s.expr();
+        try s.consume(.RPAR, "expect ) after condition");
+
+        const thenJump = try s.emitJump(.JMP_IF_FALSE);
+        try s.emitOp(.POP);
+        try s.stmt();
+        const elseJump = try s.emitJump(.JMP);
+        try s.patchJMP(thenJump);
+        try s.emitOp(.POP);
+        if (s.mt(.ELSE)) try s.stmt();
+        try s.patchJMP(elseJump);
+    }
+
+    pub fn whileStmt(s: *Self) !void {
+        const loopStart = s.curChunk().cap;
+        try s.consume(.LPAR, "expect ( after while");
+        try s.expr();
+        try s.consume(.RPAR, "expect ) after condition");
+
+        const exitJump = try s.emitJump(.JMP_IF_FALSE);
+        try s.emitOp(.POP);
+        try s.stmt();
+        try s.emitLoop(loopStart);
+        try s.patchJMP(exitJump);
+        try s.emitOp(.POP);
+    }
+
+    pub fn forStmt(s: *Self) !void {
+        try s.beginScope();
+        try s.consume(.LPAR, "expect ( after for");
+        if (s.mt(.SEMICOL)) {
+            //no initializer
+        } else if (s.mt(.VAR)) {
+            try s.varDecl(); // consumes trailing semi
+        } else {
+            try s.exprStmt(); // consumes trailing semi
+        }
+        var loopStart = s.curChunk().cap;
+        const exitJump = if (!s.mt(.SEMICOL)) b: {
+            try s.expr();
+            try s.consume(.SEMICOL, "expect ; after loop condition");
+
+            const v = try s.emitJump(.JMP_IF_FALSE);
+            try s.emitOp(.POP);
+            break :b v;
+        } else null;
+
+        if (!s.mt(.RPAR)) {
+            const bodyJump = try s.emitJump(.JMP);
+            const incrStart = s.curChunk().cap;
+            try s.expr();
+            try s.emitOp(.POP);
+
+            try s.consume(.RPAR, "expect ) after for clauses");
+            try s.emitLoop(loopStart);
+            loopStart = incrStart;
+            try s.patchJMP(bodyJump);
+        }
+
+        try s.stmt();
+        try s.emitLoop(loopStart);
+
+        if (exitJump) |jmp| {
+            try s.patchJMP(jmp);
+            try s.emitOp(.POP);
+        }
+
+        try s.endScope();
+    }
+
+    pub fn emitLoop(s: *Self, start: usize) !void {
+        try s.emitOp(.LOOP);
+
+        if (std.math.cast(u16, s.curChunk().cap - start + 2)) |jmp| {
+            try s.emitInt(u16, jmp, start);
+        } else {
+            try s.displayErr(&s.prev, "too long jump");
+        }
+    }
+
+    pub fn emitJump(s: *Self, op: lx.OpCode) !usize {
+        try s.emitOp(op);
+        try s.emitInt(u16, 0, null);
+        return s.curChunk().cap - 2;
+    }
+
+    pub fn patchJMP(s: *Self, offset: usize) !void {
+        if (std.math.cast(u16, s.curChunk().cap - offset - 2)) |jmp| {
+            try s.emitInt(u16, jmp, offset);
+        } else {
+            try s.displayErr(&s.prev, "too long jump");
         }
     }
 
@@ -137,10 +240,11 @@ pub const Compiler = struct {
 
         for (s.current.locals[s.current.localCount..]) |local| {
             if (local.depth) |depth| {
-                if (depth > s.current.scopeDepth) {
+                if (depth <= s.current.scopeDepth) {
                     break;
                 }
             }
+
             try s.emitOp(.POP);
             s.current.localCount += 1;
         }
@@ -270,11 +374,28 @@ pub const Compiler = struct {
 
             if (name.tp == local.name.tp and std.mem.eql(u8, name.val.?, local.name.val.?)) {
                 if (local.depth == null) try s.displayErr(&name, "cant read local variable from its own initializer");
-
                 return (maxInt(u8) - i) - 1;
             }
         }
         return null;
+    }
+
+    pub fn @"and"(s: *Self, _: bool) !void {
+        const endJump = try s.emitJump(.JMP_IF_FALSE);
+        try s.emitOp(.POP);
+        try s.parsePrec(.AND);
+        try s.patchJMP(endJump);
+    }
+
+    pub fn @"or"(s: *Self, _: bool) !void {
+        const elseJump = try s.emitJump(.JMP_IF_FALSE);
+        const endJump = try s.emitJump(.JMP);
+
+        try s.patchJMP(elseJump);
+        try s.emitOp(.POP);
+
+        try s.parsePrec(.OR);
+        try s.patchJMP(endJump);
     }
 
     pub fn variable(s: *Self, canAssign: bool) !void {
@@ -317,6 +438,10 @@ pub const Compiler = struct {
         for (ops) |v| {
             try s.curChunk().writeChunk(v, s.prev.line);
         }
+    }
+
+    pub fn emitInt(s: *Self, comptime T: type, v: T, offset: ?usize) !void {
+        try s.curChunk().writeInt(T, v, s.prev.line, offset);
     }
 
     pub fn emitByte(s: *Self, b: anytype) !void {
@@ -399,7 +524,6 @@ pub const Compiler = struct {
         }
     };
 
-    usingnamespace @import("scanner.zig");
     const rules = blk: {
         var rls = std.EnumArray(lx.TokenType, ParseRule).initUndefined();
         rls.set(.LPAR, ParseRule.of(&Self.grouping, null, .NONE));
@@ -420,6 +544,8 @@ pub const Compiler = struct {
         rls.set(.LESS_EQL, ParseRule.of(null, &Self.binary, .COMPARISON));
         rls.set(.STRING, ParseRule.of(&Self.string, null, .NONE));
         rls.set(.IDENT, ParseRule.of(&Self.variable, null, .NONE));
+        rls.set(.AND, ParseRule.of(null, &Self.@"and", .AND));
+        rls.set(.OR, ParseRule.of(null, &Self.@"or", .OR));
         break :blk rls;
     };
 };
@@ -459,4 +585,6 @@ const Local = struct {
     depth: ?usize,
 };
 
-test Compiler {}
+test Compiler {
+    std.debug.print("{any}\n", .{@sizeOf(u16)});
+}

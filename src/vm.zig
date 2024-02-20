@@ -1,6 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lx = @import("zlox.zig");
+const mem = std.mem;
+const Endianess = @import("builtin").cpu.arch.endian();
 
 const StackMax = 512;
 
@@ -93,6 +95,10 @@ pub const VM = struct {
                 },
                 .RETURN => {
                     //std.debug.print("returned: {any}\n", .{s.pop()});
+
+                    if (@intFromPtr(s.sp) != @intFromPtr(&s.stack)) {
+                        @panic("stack not empty");
+                    }
                     break :outer;
                 },
                 .TRUE => s.push(true),
@@ -131,6 +137,16 @@ pub const VM = struct {
                     const slot: usize = s.incp();
                     s.push(s.stack[slot]);
                 },
+                .JMP_IF_FALSE => {
+                    const offset = s.read(u16);
+                    if (s.peek(0).isFalsey()) s.ip += offset;
+                },
+                .JMP => {
+                    s.ip += s.read(u16);
+                },
+                .LOOP => {
+                    s.ip -= s.read(u16);
+                },
                 .EQL => {
                     const b = s.pop();
                     const a = s.pop();
@@ -139,6 +155,12 @@ pub const VM = struct {
                 //else => unreachable,
             }
         }
+    }
+
+    fn read(s: *Self, comptime T: type) T {
+        const v = mem.readInt(T, s.ip[0..@sizeOf(T)], Endianess);
+        s.ip += @sizeOf(T);
+        return v;
     }
 
     fn concat(s: *Self) !void {
@@ -198,6 +220,7 @@ pub const VM = struct {
 
     fn pop(s: *Self) lx.Value {
         s.sp -= 1;
+        std.debug.assert(@intFromPtr(s.sp) >= @intFromPtr(&s.stack)); // stack underflow
         return s.sp[0];
     }
 
@@ -250,6 +273,9 @@ pub const OpCode = enum(u8) {
     SET_GLOB,
     GET_LOCAL,
     SET_LOCAL,
+    JMP_IF_FALSE,
+    JMP,
+    LOOP,
     CONST,
     NEGATE,
     PRINT,
@@ -278,9 +304,10 @@ test VM {
     //const tst = "!(5 - 4 > 3 * 2 == !nil)";
     //const tst = "\"hello\"==\"hello\"";
     //const tst = "print 1+1;";
-    const tst = "{" ++
+    const tst =
         "var beverage = \"cafe au lait\";\n" ++
         "var breakfast = \"beignets\";\n" ++
+        "for (var i; i < 5; i += 1) {\n" ++
         "breakfast = \"beignets with \"+ beverage;\n" ++
         "print breakfast;}";
 

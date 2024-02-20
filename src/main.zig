@@ -30,7 +30,7 @@ pub fn runFile(fileName: [:0]const u8) !void {
 
 pub fn repl() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     _ = alloc;
     defer _ = gpa.deinit();
 
@@ -51,7 +51,7 @@ pub fn repl() !void {
 }
 
 test "simple test" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
     const stdout_file = std.io.getStdOut().writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
@@ -62,17 +62,17 @@ test "simple test" {
     var c = lx.Chunk.init(alloc);
     defer c.deinit();
 
-    var cst = try c.addConst(1.2);
+    const cst = try c.addConst(1.2);
     try c.writeChunk(lx.OpCode.CONST, 5);
     try c.writeChunk(cst, 5);
 
-    var a1 = try c.addConst(3.4);
+    const a1 = try c.addConst(3.4);
     try c.writeChunk(lx.OpCode.CONST, 5);
     try c.writeChunk(a1, 5);
 
     try c.writeChunk(lx.OpCode.ADD, 5);
 
-    var a2 = try c.addConst(5.6);
+    const a2 = try c.addConst(5.6);
     try c.writeChunk(lx.OpCode.CONST, 5);
     try c.writeChunk(a2, 5);
 

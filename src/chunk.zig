@@ -4,6 +4,7 @@ const mem = @import("memory.zig");
 const Value = @import("value.zig").Value;
 const debug = @import("debug.zig");
 const OpCode = @import("vm.zig").OpCode;
+const Endianess = @import("builtin").cpu.arch.endian();
 
 const ValueArr = std.ArrayList(Value);
 
@@ -26,7 +27,9 @@ pub const Chunk = struct {
         const byte: u8 = switch (@TypeOf(v)) {
             OpCode => @intFromEnum(v),
             usize => @intCast(v),
-            else => unreachable,
+            else => {
+                @panic("cant write unknown type: " ++ @typeName(@TypeOf(v)));
+            },
         };
         if (s.code.len < s.cap + 1) {
             const newCap = if (s.cap < 8) 8 else s.cap * 2;
@@ -37,6 +40,24 @@ pub const Chunk = struct {
         s.code[s.cap] = byte;
         s.lines[s.cap] = line;
         s.cap += 1;
+    }
+
+    pub fn writeInt(s: *Self, comptime T: type, v: T, line: u64, offset: ?usize) !void {
+        const len = @sizeOf(T);
+        const idx = offset orelse s.cap;
+        if (s.code.len < idx + len) {
+            const newCap = if (idx < 8) 8 else idx * 2;
+            s.code = try mem.realloc(s.alloc, s.code, newCap);
+            s.lines = try mem.realloc(s.alloc, s.lines, newCap);
+        }
+
+        const buf: *[@sizeOf(T)]u8 = @ptrCast(s.code[idx .. idx + len].ptr);
+        std.mem.writeInt(T, buf, v, Endianess);
+        for (s.lines[idx .. idx + len]) |*l| {
+            l.* = line;
+        }
+
+        s.cap += len;
     }
 
     pub fn addConst(s: *Self, v: Value) !usize {
