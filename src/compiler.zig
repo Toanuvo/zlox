@@ -5,7 +5,8 @@ const maxInt = std.math.maxInt;
 const mem = std.mem;
 const Endianess = @import("builtin").cpu.arch.endian();
 
-pub const Compiler = struct {
+pub const Parser = struct {
+    finished: bool = false,
     cur: lx.Token = undefined,
     prev: lx.Token = undefined,
     scnr: *lx.Scanner = undefined,
@@ -13,22 +14,22 @@ pub const Compiler = struct {
     panicMode: bool = false,
     alloc: Allocator,
     src: [:0]const u8,
-    chunk: *lx.Chunk,
     vm: *lx.VM,
-    current: ScopeCompiler,
+    current: *Compiler = undefined,
 
     const Self = @This();
-    pub fn init(alloc: Allocator, vm: *lx.VM, src: [:0]const u8, c: *lx.Chunk) Self {
+    pub fn init(alloc: Allocator, vm: *lx.VM, src: [:0]const u8) !Self {
         return .{
-            .chunk = c,
+            //.chunk = c,
             .src = src,
             .alloc = alloc,
             .vm = vm,
-            .current = .{},
         };
     }
 
-    pub fn compile(s: *Self) !bool {
+    pub fn compile(s: *Self) !*lx.Func {
+        var c: Compiler = undefined;
+        try Compiler.init(s, &c, .SCRIPT);
         var sc = lx.Scanner.init(s.alloc, s.src);
         s.scnr = &sc;
         s.advance();
@@ -37,18 +38,69 @@ pub const Compiler = struct {
             try s.decl();
         }
 
-        try s.consume(.EOF, "expect end of expr");
-        try s.emitOp(.RETURN);
-        return !s.hadError;
+        //try s.consume(.EOF, "expect end of expr");
+        return s.endCompiler();
+        //return !s.hadError; // todo deal with error
     }
 
     pub fn decl(s: *Self) anyerror!void {
-        if (s.mt(.VAR)) {
+        if (s.mt(.FUN)) {
+            try s.funDecl();
+        } else if (s.mt(.VAR)) {
             try s.varDecl();
         } else {
             try s.stmt();
         }
         if (s.panicMode) s.sync();
+    }
+
+    pub fn funDecl(s: *Self) !void {
+        const glob = try s.parseVar("expect function name");
+        s.markInit();
+        try s.function(.FUNC);
+        try s.defineVar(glob);
+    }
+
+    pub fn function(s: *Self, fnType: lx.FuncType) !void {
+        var compiler: Compiler = undefined;
+        try Compiler.init(s, &compiler, fnType);
+        try s.beginScope();
+
+        try s.consume(.LPAR, "expect (  after fn name");
+        if (s.cur.tp != .RPAR) {
+            while (true) {
+                s.current.function.arity += 1;
+                const cnst = try s.parseVar("expect parameter name");
+                try s.defineVar(cnst);
+
+                if (!s.mt(.COMMA)) break;
+            }
+        }
+        try s.consume(.RPAR, "expect )  after parameters");
+        try s.consume(.LBRACE, "expect {  before fn body");
+        try s.block();
+
+        const func = try s.endCompiler();
+        try s.emitConst(.{ .Obj = &func.obj });
+    }
+
+    pub fn call(s: *Self, _: bool) !void {
+        const count: usize = try s.argList();
+        try s.emitOp(.CALL);
+        try s.emitByte(count);
+    }
+
+    pub fn argList(s: *Self) !u8 {
+        var count: u8 = 0;
+        if (s.cur.tp != .RPAR) {
+            while (true) {
+                try s.expr();
+                count += 1;
+                if (!s.mt(.COMMA)) break;
+            }
+        }
+        try s.consume(.RPAR, "expect ) after arg list");
+        return count;
     }
 
     pub fn varDecl(s: *Self) !void {
@@ -74,6 +126,7 @@ pub const Compiler = struct {
     }
 
     pub fn markInit(s: *Self) void {
+        if (s.current.scopeDepth == 0) return;
         s.current.locals[s.current.localCount].depth = s.current.scopeDepth;
     }
 
@@ -123,6 +176,8 @@ pub const Compiler = struct {
             try s.printStmt();
         } else if (s.mt(.IF)) {
             try s.ifStmt();
+        } else if (s.mt(.RETURN)) {
+            try s.returnStmt();
         } else if (s.mt(.WHILE)) {
             try s.whileStmt();
         } else if (s.mt(.FOR)) {
@@ -149,6 +204,17 @@ pub const Compiler = struct {
         try s.emitOp(.POP);
         if (s.mt(.ELSE)) try s.stmt();
         try s.patchJMP(elseJump);
+    }
+
+    pub fn returnStmt(s: *Self) !void {
+        if (s.current.funcType == .SCRIPT) try s.displayErr(&s.prev, "cant return from top level code");
+        if (s.mt(.SEMICOL)) {
+            try s.emitReturn();
+        } else {
+            try s.expr();
+            try s.consume(.SEMICOL, "expect ; after return value");
+            try s.emitOp(.RETURN);
+        }
     }
 
     pub fn whileStmt(s: *Self) !void {
@@ -430,8 +496,11 @@ pub const Compiler = struct {
     }
 
     pub fn emitConst(s: *Self, v: lx.Value) !void {
+        //std.debug.print("val: {any}\n", .{v});
         try s.emitOp(.CONST);
         try s.emitByte(try s.makeConst(v));
+        //const j = s.curChunk().code[s.curChunk().cap - 1];
+        //std.debug.print("{any}, {any}\n", .{ i, j });
     }
 
     pub fn makeConst(s: *Self, v: lx.Value) !usize {
@@ -439,6 +508,7 @@ pub const Compiler = struct {
     }
 
     pub fn emitOp(s: *Self, b: lx.OpCode) !void {
+        //std.debug.print("{*}: {any}\n", .{ s.curChunk(), b });
         try s.curChunk().writeChunk(b, s.prev.line);
     }
 
@@ -456,8 +526,13 @@ pub const Compiler = struct {
         try s.curChunk().writeChunk(b, s.prev.line);
     }
 
+    pub fn emitReturn(s: *Self) !void {
+        try s.emitOp(.NIL);
+        try s.emitOp(.RETURN);
+    }
+
     pub fn curChunk(s: *Self) *lx.Chunk {
-        return s.chunk;
+        return s.current.function.chunk;
     }
 
     pub fn consume(s: *Self, tp: lx.TokenType, msg: [:0]const u8) !void {
@@ -534,7 +609,7 @@ pub const Compiler = struct {
 
     const rules = blk: {
         var rls = std.EnumArray(lx.TokenType, ParseRule).initUndefined();
-        rls.set(.LPAR, ParseRule.of(&Self.grouping, null, .NONE));
+        rls.set(.LPAR, ParseRule.of(&Self.grouping, &Self.call, .CALL));
         rls.set(.MINUS, ParseRule.of(&Self.unary, &Self.binary, .TERM));
         rls.set(.PLUS, ParseRule.of(null, &Self.binary, .TERM));
         rls.set(.SLASH, ParseRule.of(null, &Self.binary, .FACTOR));
@@ -555,6 +630,52 @@ pub const Compiler = struct {
         rls.set(.AND, ParseRule.of(null, &Self.@"and", .AND));
         rls.set(.OR, ParseRule.of(null, &Self.@"or", .OR));
         break :blk rls;
+    };
+
+    pub fn endCompiler(s: *Self) !*lx.Func {
+        if (s.finished) @panic("double end compiler");
+        try s.emitReturn();
+        const func = s.current.function;
+        if (s.current.enclosing) |c| {
+            s.current = c;
+        } else {
+            s.finished = true;
+        }
+        //s.current = s.current.enclosing orelse undefined; // this should return exit the parser
+        return func;
+    }
+
+    const Compiler = struct {
+        enclosing: ?*Compiler,
+        function: *lx.Func,
+        funcType: FuncType,
+        // array grows down
+        locals: [maxInt(u8)]Local = [_]Local{undefined} ** maxInt(u8),
+        localCount: usize = maxInt(u8), // points to the last local or off the top/end of the array
+        scopeDepth: usize = 0,
+
+        pub fn init(s: *Self, c: *Compiler, tp: FuncType) !void {
+            c.* = .{
+                .enclosing = s.current,
+                .funcType = tp,
+                .function = try lx.Func.init(s.alloc, s.vm),
+            };
+
+            s.current = c;
+            if (c.funcType != .SCRIPT) {
+                c.function.name = try lx.String.allocString(s.vm, s.alloc, s.prev.val.?);
+            }
+
+            c.localCount -= 1;
+            c.locals[c.localCount] = .{
+                .name = .{
+                    .tp = .ERROR,
+                    .val = "",
+                    .line = maxInt(u64),
+                },
+                .depth = 0,
+            };
+        }
     };
 };
 
@@ -581,18 +702,16 @@ const Precedence = enum(u8) {
     }
 };
 
-const ScopeCompiler = struct {
-    // array grows down
-    locals: [maxInt(u8)]Local = [_]Local{undefined} ** maxInt(u8),
-    localCount: usize = maxInt(u8), // points to the last local or off the top/end of the array
-    scopeDepth: usize = 0,
-};
-
 const Local = struct {
     name: lx.Token,
     depth: ?usize,
 };
 
-test Compiler {
+pub const FuncType = enum {
+    FUNC,
+    SCRIPT,
+};
+
+test Parser {
     std.debug.print("{any}\n", .{@sizeOf(u16)});
 }

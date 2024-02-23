@@ -27,10 +27,14 @@ pub const Obj = struct {
 
 pub const Type = enum {
     String,
+    Func,
+    NativeFn,
 
     pub fn from_struct(comptime t: type) Type {
         return switch (t) {
             String => .String,
+            Func => .Func,
+            NativeFn => .NativeFn,
             else => unreachable,
         };
     }
@@ -38,6 +42,8 @@ pub const Type = enum {
     pub fn as_type(t: Type) type {
         return switch (t) {
             .String => String,
+            .Func => Func,
+            .NativeFn => NativeFn,
             //else => unreachable,
         };
     }
@@ -82,13 +88,13 @@ pub const String = struct {
         if (vm.strings.getKeyPtr(hvOnly)) |s| {
             return s;
         } else {
-            var s = try alloc.create(String);
-            s.obj = .{ .tp = Type.from_struct(Self) };
-            s.chars = try alloc.dupeZ(u8, str);
-            s.hv = h;
-
-            const p = if (vm.objects) |prev| &prev.next else &vm.objects;
-            p.* = &s.obj;
+            const s = try alloc.create(String);
+            s.* = .{
+                .obj = .{ .tp = Type.from_struct(Self) },
+                .chars = try alloc.dupeZ(u8, str),
+                .hv = h,
+            };
+            vm.touchObj(&s.obj);
 
             try vm.strings.putNoClobber(s.*, {});
             return s;
@@ -105,6 +111,44 @@ pub const String = struct {
     pub fn destroy(s: *Self, alloc: Allocator) void {
         //alloc.free(s.chars); // all strings are interned so this object never owns the string
         alloc.destroy(s);
+    }
+};
+
+pub const Func = struct {
+    obj: Obj,
+    arity: u8,
+    chunk: *lx.Chunk,
+    name: ?*String = null, // fn with no name is a script
+
+    const Self = @This();
+    pub fn init(alloc: Allocator, vm: *lx.VM) !*Self {
+        const s = try alloc.create(Self);
+        s.* = .{
+            .obj = .{ .tp = Type.from_struct(Self) },
+            .arity = 0,
+            .chunk = try lx.Chunk.initAlloc(alloc),
+        };
+
+        vm.touchObj(&s.obj);
+        return s;
+    }
+};
+
+pub const NativeFn = struct {
+    obj: Obj,
+    native: NativeFnT,
+
+    pub const NativeFnT = *const fn (u8, []lx.Value) lx.Value;
+
+    const Self = @This();
+    pub fn init(alloc: Allocator, vm: *lx.VM, func: NativeFnT) !*Self {
+        const s = try alloc.create(Self);
+        s.* = .{
+            .obj = .{ .tp = Type.from_struct(Self) },
+            .native = func,
+        };
+        vm.touchObj(&s.obj);
+        return s;
     }
 };
 

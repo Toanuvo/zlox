@@ -19,6 +19,7 @@ pub const Value = union(ValueTag) {
             .Num => a.Num == b.Num,
             .Obj => |o| switch (o.tp) {
                 .String => a.Obj.as(lx.String).hv == b.Obj.as(lx.String).hv,
+                else => unreachable,
             },
             //else => unreachable,
         };
@@ -40,15 +41,19 @@ pub const Value = union(ValueTag) {
     pub fn format(s: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (s) {
             .Obj => |o| {
-                if (o.is(lx.String)) {
-                    try writer.print("\"{s}\"", .{o.as(lx.String).chars});
-                } else {
-                    try writer.print("{any}", .{s});
+                switch (o.tp) {
+                    .String => try writer.print("\"{s}\"", .{o.as(lx.String).chars}),
+                    .Func => {
+                        const f = o.as(lx.Func);
+                        const name = if (f.name) |str| str.chars else "SCRIPT";
+                        try writer.print("fn {s}({d})", .{ name, f.arity });
+                    },
+                    .NativeFn => try writer.print("Native[{*}]", .{o.as(lx.NativeFn).native}),
                 }
             },
-            else => {
-                try writer.print("{any}", .{s});
-            },
+            .Bool => try writer.print("Bool: {any}", .{s.Bool}),
+            .Num => try writer.print("Num: {d}", .{s.Num}),
+            .Nil => try writer.print("NIL", .{}),
         }
     }
 };

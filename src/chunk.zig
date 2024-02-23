@@ -23,6 +23,15 @@ pub const Chunk = struct {
         };
     }
 
+    pub fn initAlloc(alloc: Allocator) !*Self {
+        const s = try alloc.create(Self);
+        s.* = .{
+            .alloc = alloc,
+            .vals = ValueArr.init(alloc),
+        };
+        return s;
+    }
+
     pub fn writeChunk(s: *Self, v: anytype, line: u64) !void {
         const byte: u8 = switch (@TypeOf(v)) {
             OpCode => @intFromEnum(v),
@@ -58,12 +67,16 @@ pub const Chunk = struct {
         for (s.lines[idx .. idx + len]) |*l| {
             l.* = line;
         }
+        //std.debug.print("cap {any}\n", .{s.cap});
         if (offset == null) s.cap += len;
     }
 
     pub fn addConst(s: *Self, v: Value) !usize {
+        //std.debug.dumpCurrentStackTrace(null);
         try s.vals.append(v);
-        return s.vals.items.len - 1;
+        const idx = s.vals.items.len - 1;
+        //std.debug.print("{*}[{any}] = {any}\n", .{ s, idx, v });
+        return idx;
     }
 
     pub fn deinit(s: *Self) void {

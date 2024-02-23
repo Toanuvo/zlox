@@ -3,6 +3,36 @@ const debug = @import("debug.zig");
 const lx = @import("zlox.zig");
 
 pub fn main() !void {
+    std.debug.print("\n", .{});
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = false }){};
+    const alloc = gpa.allocator();
+    defer _ = gpa.deinit();
+    var vm = try lx.VM.init(alloc);
+    //defer vm.deinit();
+
+    //const tst = "!(5 - 4 > 3 * 2 == !nil)";
+    //const tst = "\"hello\"==\"hello\"";
+    //const tst = "print 1+1;";
+    const tst =
+        //"var beverage = \"cafe au lait\";\n" ++
+        //"var breakfast = \"beignets\";\n" ++
+        //"if(true){\n" ++
+        //"for (var i = 0; i < 5; i = i + 1) {\n" ++
+        //"breakfast = \"beignets with \"+ beverage;\n" ++
+        //"print breakfast;}";
+        "fun fib(n) {\n" ++
+        "if (n < 2) return n;\n" ++
+        "return fib(n - 2) + fib(n - 1); }\n" ++
+        "var start = clock();\n" ++
+        "print fib(35);\n" ++
+        "print clock() - start;\n";
+
+    //try vm.interpret("!(5 - 4 > 3 * 2 == !nil)");
+    //errdefer c.deinit();
+
+    //vm.curFrame.ip = c.code.ptr;
+    //vm.chunk = &c;
+    try vm.interpret(tst);
     const args = std.os.argv;
     if (args.len == 1) {
         try repl();
