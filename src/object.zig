@@ -183,6 +183,8 @@ pub const Closure = struct {
 pub const Upvalue = struct {
     obj: Obj,
     location: *lx.Value,
+    closed: lx.Value = .Nil,
+    next: ?*Upvalue = null,
 
     const Self = @This();
     pub fn init(alloc: Allocator, slot: *lx.Value, vm: *lx.VM) !*Self {

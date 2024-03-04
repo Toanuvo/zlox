@@ -23,6 +23,7 @@ pub const VM = struct {
     frames: [FRAME_MAX]CallFrame = [_]CallFrame{undefined} ** FRAME_MAX,
     frameCount: usize = 0,
     curFrame: *CallFrame = undefined,
+    openUpValues: ?*lx.Upvalue = null,
 
     const Self = @This();
     pub fn init(alloc: Allocator) !*Self {
@@ -128,6 +129,7 @@ pub const VM = struct {
                 },
                 .RETURN => {
                     const res = s.pop();
+                    s.closeUpValues(&s.curFrame.slots[0]);
                     s.frameCount -= 1;
                     if (s.frameCount == 0) {
                         _ = s.pop();
@@ -211,6 +213,10 @@ pub const VM = struct {
                     const slot = s.incp();
                     s.curFrame.clos.upValues[slot].location.* = s.peek(0);
                 },
+                .CLOSE_UP_VAL => {
+                    s.closeUpValues(&(s.sp - 1)[0]);
+                    _ = s.pop();
+                },
                 .CALL => {
                     const argCount = s.incp();
                     //std.debug.print("args: {any}\n", .{argCount});
@@ -239,7 +245,36 @@ pub const VM = struct {
     }
 
     fn captureUpValue(s: *Self, local: *lx.Value) !*lx.Upvalue {
-        return try lx.Upvalue.init(s.alloc, local, s);
+        var prev: ?*lx.Upvalue = null;
+        var upValue = s.openUpValues;
+        while (upValue) |uv| {
+            if (@intFromPtr(uv.location) > @intFromPtr(local)) break;
+            prev = uv;
+            upValue = uv.next;
+        }
+
+        if (upValue) |uv|
+            if (@intFromPtr(uv.location) == @intFromPtr(local)) {
+                return uv;
+            };
+
+        const created = try lx.Upvalue.init(s.alloc, local, s);
+        created.next = upValue;
+        if (prev) |p| {
+            p.next = created;
+        } else {
+            s.openUpValues = created;
+        }
+        return created;
+    }
+
+    fn closeUpValues(s: *Self, last: *lx.Value) void {
+        while (s.openUpValues) |uv| {
+            if (@intFromPtr(last) <= @intFromPtr(uv.location)) break;
+            uv.closed = uv.location.*;
+            uv.location = &uv.closed;
+            s.openUpValues = uv.next;
+        }
     }
 
     fn callValue(s: *Self, callee: lx.Value, argCount: u8) bool {
@@ -426,6 +461,7 @@ pub const OpCode = enum(u8) {
     JMP_IF_FALSE,
     JMP,
     CLOSURE,
+    CLOSE_UP_VAL,
     LOOP,
     CONST,
     NEGATE,

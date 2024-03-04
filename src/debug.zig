@@ -39,6 +39,7 @@ pub fn dissInstr(s: *const Chunk, stream: anytype, offset: usize) !usize {
             .LESS,
             .NOT,
             .PRINT,
+            .CLOSE_UP_VAL,
             => simpleInstr(s, @tagName(op), stream, offset),
 
             .JMP,

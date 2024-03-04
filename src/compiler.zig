@@ -169,6 +169,7 @@ pub const Parser = struct {
         local.* = .{
             .name = name,
             .depth = null,
+            .isCaptured = false,
         };
     }
 
@@ -324,8 +325,11 @@ pub const Parser = struct {
                     break;
                 }
             }
-
-            try s.emitOp(.POP);
+            if (local.isCaptured) {
+                try s.emitOp(.CLOSE_UP_VAL);
+            } else {
+                try s.emitOp(.POP);
+            }
             s.current.?.localCount += 1;
         }
     }
@@ -419,7 +423,7 @@ pub const Parser = struct {
             getOp: lx.OpCode,
         };
 
-        const varb: Variable = if (try resolveLocal(s.current.?, name)) |loc| b: {
+        const varb: Variable = if (try resolveLocal(s.current.?, name, false)) |loc| b: {
             break :b .{
                 .arg = loc,
                 .setOp = .SET_LOCAL,
@@ -452,17 +456,18 @@ pub const Parser = struct {
         }
     }
 
-    pub fn resolveLocal(comp: *Compiler, name: lx.Token) !?usize {
+    pub fn resolveLocal(comp: *Compiler, name: lx.Token, capture: bool) !?usize {
         std.debug.print("func: {?any}\n", .{comp.function.name});
         std.debug.print("resolveLocal: {?s}\n", .{name.val});
         std.debug.print("locals: {any}\n", .{comp.locals[comp.localCount..].len});
-        for (comp.locals[comp.localCount..], comp.localCount..) |local, i| {
+        for (comp.locals[comp.localCount..], comp.localCount..) |*local, i| {
             if (local.depth != null and local.depth.? < comp.scopeDepth) { // local.depth != -1
                 break;
             }
 
             if (name.tp == local.name.tp and std.mem.eql(u8, name.val.?, local.name.val.?)) {
                 if (local.depth == null) @panic("cant read local variable from its own initializer");
+                if (capture) local.isCaptured = true;
                 //if (local.depth == null) try s.displayErr(&name, "cant read local variable from its own initializer");
                 std.debug.print("idx: {any}\n", .{(maxInt(u8) - i) - 1});
                 return (maxInt(u8) - i) - 1;
@@ -474,7 +479,7 @@ pub const Parser = struct {
     pub fn resolveUpvalue(comp: *Compiler, name: lx.Token) !?usize {
         std.debug.print("resolve: {?s}\n", .{name.val});
         return if (comp.enclosing) |enclosing|
-            if (try resolveLocal(enclosing, name)) |loc|
+            if (try resolveLocal(enclosing, name, true)) |loc|
                 addUpValue(comp, loc, true)
             else if (try resolveUpvalue(enclosing, name)) |uv|
                 addUpValue(comp, uv, false)
@@ -712,9 +717,10 @@ pub const Parser = struct {
 
             c.localCount -= 1;
             c.locals[c.localCount] = .{
+                .isCaptured = false,
                 .name = .{
                     .tp = .ERROR,
-                    .val = "",
+                    .val = "ZERO LOCAL",
                     .line = maxInt(u64),
                 },
                 .depth = 0,
@@ -749,6 +755,7 @@ const Precedence = enum(u8) {
 const Local = struct {
     name: lx.Token,
     depth: ?usize,
+    isCaptured: bool,
 };
 
 pub const FuncType = enum {
