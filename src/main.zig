@@ -13,19 +13,26 @@ pub fn main() !void {
     //const tst = "!(5 - 4 > 3 * 2 == !nil)";
     //const tst = "\"hello\"==\"hello\"";
     //const tst = "print 1+1;";
+    //const tst =
+    //"var beverage = \"cafe au lait\";\n" ++
+    //"var breakfast = \"beignets\";\n" ++
+    //"if(true){\n" ++
+    //"for (var i = 0; i < 5; i = i + 1) {\n" ++
+    //"breakfast = \"beignets with \"+ beverage;\n" ++
+    //"print breakfast;}";
+    //"fun fib(n) {\n" ++
+    //"if (n < 2) return n;\n" ++
+    //"return fib(n - 2) + fib(n - 1); }\n" ++
+    //"var start = clock();\n" ++
+    //"print fib(10);\n" ++
+    //"print clock() - start;\n";
     const tst =
-        //"var beverage = \"cafe au lait\";\n" ++
-        //"var breakfast = \"beignets\";\n" ++
-        //"if(true){\n" ++
-        //"for (var i = 0; i < 5; i = i + 1) {\n" ++
-        //"breakfast = \"beignets with \"+ beverage;\n" ++
-        //"print breakfast;}";
-        "fun fib(n) {\n" ++
-        "if (n < 2) return n;\n" ++
-        "return fib(n - 2) + fib(n - 1); }\n" ++
-        "var start = clock();\n" ++
-        "print fib(35);\n" ++
-        "print clock() - start;\n";
+        "fun outer() {\n" ++
+        "var x = \"outside\";\n" ++
+        "fun inner() {\n" ++
+        "print x;\n}\n" ++
+        "inner();\n}\n" ++
+        "outer();";
 
     //try vm.interpret("!(5 - 4 > 3 * 2 == !nil)");
     //errdefer c.deinit();
@@ -33,14 +40,14 @@ pub fn main() !void {
     //vm.curFrame.ip = c.code.ptr;
     //vm.chunk = &c;
     try vm.interpret(tst);
-    const args = std.os.argv;
-    if (args.len == 1) {
-        try repl();
-    } else if (args.len == 2) {
-        try runFile(std.mem.span(args[1]));
-    } else {
-        unreachable;
-    }
+    //const args = std.os.argv;
+    //if (args.len == 1) {
+    try repl();
+    //} else if (args.len == 2) {
+    //try runFile(std.mem.span(args[1]));
+    //} else {
+    //unreachable;
+    //}
 
     // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
 

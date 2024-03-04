@@ -36,6 +36,7 @@ pub const Chunk = struct {
         const byte: u8 = switch (@TypeOf(v)) {
             OpCode => @intFromEnum(v),
             usize => @intCast(v),
+            bool => @intFromBool(v),
             else => {
                 @panic("cant write unknown type: " ++ @typeName(@TypeOf(v)));
             },
@@ -84,6 +85,16 @@ pub const Chunk = struct {
         s.alloc.free(s.lines);
         s.vals.deinit();
         // do i need to zero fields?
+    }
+
+    pub fn format(s: *Self, comptime _: []const u8, _: std.fmt.FormatOptions, stream: anytype) !void {
+        for (s.vals.items, 0..) |v, i| {
+            try stream.print("[{d:0>4}] = {}\n", .{ i, v });
+        }
+        var offset: usize = 0;
+        while (offset < s.cap) {
+            offset = try debug.dissInstr(s, stream, offset);
+        }
     }
 };
 

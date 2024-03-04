@@ -29,12 +29,16 @@ pub const Type = enum {
     String,
     Func,
     NativeFn,
+    Closure,
+    Upvalue,
 
     pub fn from_struct(comptime t: type) Type {
         return switch (t) {
             String => .String,
             Func => .Func,
             NativeFn => .NativeFn,
+            Closure => .Closure,
+            Upvalue => .Upvalue,
             else => unreachable,
         };
     }
@@ -44,6 +48,8 @@ pub const Type = enum {
             .String => String,
             .Func => Func,
             .NativeFn => NativeFn,
+            .Closure => Closure,
+            .Upvalue => Upvalue,
             //else => unreachable,
         };
     }
@@ -112,11 +118,15 @@ pub const String = struct {
         //alloc.free(s.chars); // all strings are interned so this object never owns the string
         alloc.destroy(s);
     }
+    pub fn format(s: *Self, comptime _: []const u8, _: std.fmt.FormatOptions, stream: anytype) !void {
+        try stream.print("{{\"{s}\"}}", .{s.chars});
+    }
 };
 
 pub const Func = struct {
     obj: Obj,
-    arity: u8,
+    arity: u8 = 0,
+    upValueCount: u8 = 0,
     chunk: *lx.Chunk,
     name: ?*String = null, // fn with no name is a script
 
@@ -125,7 +135,6 @@ pub const Func = struct {
         const s = try alloc.create(Self);
         s.* = .{
             .obj = .{ .tp = Type.from_struct(Self) },
-            .arity = 0,
             .chunk = try lx.Chunk.initAlloc(alloc),
         };
 
@@ -146,6 +155,41 @@ pub const NativeFn = struct {
         s.* = .{
             .obj = .{ .tp = Type.from_struct(Self) },
             .native = func,
+        };
+        vm.touchObj(&s.obj);
+        return s;
+    }
+};
+
+pub const Closure = struct {
+    obj: Obj,
+    func: *Func,
+    upValues: []*Upvalue,
+
+    const Self = @This();
+    pub fn init(alloc: Allocator, func: *Func, vm: *lx.VM) !*Self {
+        const upArr = try alloc.alloc(*Upvalue, func.upValueCount);
+        const s = try alloc.create(Self);
+        s.* = .{
+            .obj = .{ .tp = Type.from_struct(Self) },
+            .func = func,
+            .upValues = upArr,
+        };
+        vm.touchObj(&s.obj);
+        return s;
+    }
+};
+
+pub const Upvalue = struct {
+    obj: Obj,
+    location: *lx.Value,
+
+    const Self = @This();
+    pub fn init(alloc: Allocator, slot: *lx.Value, vm: *lx.VM) !*Self {
+        const s = try alloc.create(Self);
+        s.* = .{
+            .obj = .{ .tp = Type.from_struct(Self) },
+            .location = slot,
         };
         vm.touchObj(&s.obj);
         return s;

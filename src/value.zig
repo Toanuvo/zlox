@@ -49,6 +49,8 @@ pub const Value = union(ValueTag) {
                         try writer.print("fn {s}({d})", .{ name, f.arity });
                     },
                     .NativeFn => try writer.print("Native[{*}]", .{o.as(lx.NativeFn).native}),
+                    .Closure => try writer.print("{}", .{o.as(lx.Closure).func}),
+                    .Upvalue => try writer.print("upvalue", .{}),
                 }
             },
             .Bool => try writer.print("Bool: {any}", .{s.Bool}),

@@ -79,7 +79,10 @@ pub const VM = struct {
         }
 
         s.push(*lx.Obj, &func.obj);
-        _ = s.call(func, 0);
+        _ = s.pop();
+        const clos = try lx.Closure.init(s.alloc, func, s);
+        s.push(*lx.Obj, &clos.obj);
+        _ = s.call(clos, 0);
         try s.run();
     }
 
@@ -88,7 +91,7 @@ pub const VM = struct {
         outer: while (true) {
             const instr: OpCode = @enumFromInt(s.incp());
 
-            //std.debug.print("instr: {any}\n", .{instr});
+            std.debug.print("instr: {any}\n", .{instr});
             //std.debug.print("stack: {any}\n", .{s.sp[0]});
             switch (instr) {
                 .PRINT => {
@@ -187,6 +190,27 @@ pub const VM = struct {
                 .LOOP => {
                     s.curFrame.ip -= s.read(u16);
                 },
+                .CLOSURE => {
+                    const func = s.readConst().Obj.as(lx.Func);
+                    const clos = try lx.Closure.init(s.alloc, func, s);
+                    s.push(*lx.Obj, &clos.obj);
+                    for (0..clos.upValues.len) |i| {
+                        const isLocal = s.incp() == 1;
+                        const idx = s.incp();
+                        clos.upValues[i] = if (isLocal)
+                            try s.captureUpValue(@ptrCast(s.curFrame.slots + idx))
+                        else
+                            s.curFrame.clos.upValues[idx];
+                    }
+                },
+                .GET_UPVAL => {
+                    const slot = s.incp();
+                    s.push(lx.Value, s.curFrame.clos.upValues[slot].location.*);
+                },
+                .SET_UPVAL => {
+                    const slot = s.incp();
+                    s.curFrame.clos.upValues[slot].location.* = s.peek(0);
+                },
                 .CALL => {
                     const argCount = s.incp();
                     //std.debug.print("args: {any}\n", .{argCount});
@@ -214,11 +238,16 @@ pub const VM = struct {
         return v;
     }
 
+    fn captureUpValue(s: *Self, local: *lx.Value) !*lx.Upvalue {
+        return try lx.Upvalue.init(s.alloc, local, s);
+    }
+
     fn callValue(s: *Self, callee: lx.Value, argCount: u8) bool {
         switch (callee) {
             .Obj => |o| {
                 switch (o.tp) {
-                    .Func => return s.call(o.as(lx.Func), argCount),
+                    //.Func => return s.call(o.as(lx.Func), argCount),
+                    .Closure => return s.call(o.as(lx.Closure), argCount),
                     .NativeFn => {
                         const native = o.as(lx.NativeFn).native;
                         const res = native(argCount, (s.sp - argCount)[0..argCount]);
@@ -237,15 +266,20 @@ pub const VM = struct {
         return false;
     }
 
-    fn call(s: *Self, func: *lx.Func, argCount: u8) bool {
+    fn call(s: *Self, clos: *lx.Closure, argCount: u8) bool {
+        const func = clos.func;
         if (argCount != func.arity) {
             @panic("unexpected arg count");
         }
+
+        std.debug.print("== {s} ==\n", .{if (func.name) |n| n.chars else "SCRIPT"});
+        std.debug.print("{func}\n", .{clos.func.chunk});
+
         if (s.frameCount == FRAME_MAX) @panic("stack overflow");
         s.curFrame = &s.frames[s.frameCount];
         s.frameCount += 1;
         s.curFrame.* = .{
-            .func = func,
+            .clos = clos,
             .ip = func.chunk.code.ptr,
             .slots = s.sp - argCount - 1,
         };
@@ -308,8 +342,8 @@ pub const VM = struct {
     }
 
     fn readConst(s: *Self) lx.Value {
-        //std.debug.print("{*}\n", .{s.curFrame.func.chunk});
-        return s.curFrame.func.chunk.vals.items[s.incp()];
+        //std.debug.print("{*}\n", .{s.curFrame.clos.func.chunk});
+        return s.curFrame.clos.func.chunk.vals.items[s.incp()];
     }
 
     fn incp(s: *Self) u8 {
@@ -355,9 +389,9 @@ pub const VM = struct {
         var stderr = std.io.getStdErr().writer();
         try stderr.print("err: {s}\n", .{msg});
 
-        const instr = @intFromPtr(s.curFrame.ip) - @intFromPtr(s.curFrame.func.chunk.code.ptr) - 1;
+        const instr = @intFromPtr(s.curFrame.ip) - @intFromPtr(s.curFrame.clos.func.chunk.code.ptr) - 1;
 
-        const line = s.curFrame.func.chunk.lines[instr];
+        const line = s.curFrame.clos.func.chunk.lines[instr];
         try stderr.print("[{d}] in scrcurFrame.ipt\n", .{line});
         s.resetStack();
     }
@@ -375,7 +409,7 @@ pub const VM = struct {
 };
 
 pub const CallFrame = struct {
-    func: *lx.Func,
+    clos: *lx.Closure,
     ip: [*]u8,
     slots: [*]lx.Value,
 };
@@ -387,8 +421,11 @@ pub const OpCode = enum(u8) {
     SET_GLOB,
     GET_LOCAL,
     SET_LOCAL,
+    GET_UPVAL,
+    SET_UPVAL,
     JMP_IF_FALSE,
     JMP,
+    CLOSURE,
     LOOP,
     CONST,
     NEGATE,
@@ -419,19 +456,27 @@ test VM {
     //const tst = "!(5 - 4 > 3 * 2 == !nil)";
     //const tst = "\"hello\"==\"hello\"";
     //const tst = "print 1+1;";
+    //const tst =
+    //"var beverage = \"cafe au lait\";\n" ++
+    //"var breakfast = \"beignets\";\n" ++
+    //"if(true){\n" ++
+    //"for (var i = 0; i < 5; i = i + 1) {\n" ++
+    //"breakfast = \"beignets with \"+ beverage;\n" ++
+    //"print breakfast;}";
+
+    //"fun fib(n) {\n" ++
+    //"if (n < 2) return n;\n" ++
+    //"return fib(n - 2) + fib(n - 1); }\n" ++
+    //"var start = clock();\n" ++
+    //"print fib(10);\n" ++
+    //"print clock() - start;\n";
     const tst =
-        //"var beverage = \"cafe au lait\";\n" ++
-        //"var breakfast = \"beignets\";\n" ++
-        //"if(true){\n" ++
-        //"for (var i = 0; i < 5; i = i + 1) {\n" ++
-        //"breakfast = \"beignets with \"+ beverage;\n" ++
-        //"print breakfast;}";
-        "fun fib(n) {\n" ++
-        "if (n < 2) return n;\n" ++
-        "return fib(n - 2) + fib(n - 1); }\n" ++
-        "var start = clock();\n" ++
-        "print fib(10);\n" ++
-        "print clock() - start;\n";
+        "fun outer() {\n" ++
+        "var x = \"outside\";\n" ++
+        "fun inner() {\n" ++
+        "print x;\n}\n" ++
+        "inner();\n}\n" ++
+        "outer();";
 
     //try vm.interpret("!(5 - 4 > 3 * 2 == !nil)");
     //errdefer c.deinit();

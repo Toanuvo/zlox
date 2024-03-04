@@ -15,7 +15,7 @@ pub const Parser = struct {
     alloc: Allocator,
     src: [:0]const u8,
     vm: *lx.VM,
-    current: *Compiler = undefined,
+    current: ?*Compiler = null,
 
     const Self = @This();
     pub fn init(alloc: Allocator, vm: *lx.VM, src: [:0]const u8) !Self {
@@ -56,7 +56,7 @@ pub const Parser = struct {
 
     pub fn funDecl(s: *Self) !void {
         const glob = try s.parseVar("expect function name");
-        s.markInit();
+        markInit(s.current.?);
         try s.function(.FUNC);
         try s.defineVar(glob);
     }
@@ -69,7 +69,7 @@ pub const Parser = struct {
         try s.consume(.LPAR, "expect (  after fn name");
         if (s.cur.tp != .RPAR) {
             while (true) {
-                s.current.function.arity += 1;
+                s.current.?.function.arity += 1;
                 const cnst = try s.parseVar("expect parameter name");
                 try s.defineVar(cnst);
 
@@ -81,7 +81,13 @@ pub const Parser = struct {
         try s.block();
 
         const func = try s.endCompiler();
-        try s.emitConst(.{ .Obj = &func.obj });
+        try s.emitOp(.CLOSURE);
+        try s.emitByte(try s.makeConst(.{ .Obj = &func.obj }));
+
+        for (compiler.upvalues[0..compiler.function.upValueCount]) |uv| {
+            try s.emitByte(uv.isLocal);
+            try s.emitByte(uv.idx);
+        }
     }
 
     pub fn call(s: *Self, _: bool) !void {
@@ -117,33 +123,33 @@ pub const Parser = struct {
     }
 
     pub fn defineVar(s: *Self, global: usize) !void {
-        if (s.current.scopeDepth > 0) {
-            s.markInit();
+        if (s.current.?.scopeDepth > 0) {
+            markInit(s.current.?);
             return;
         }
         try s.emitOp(.DEF_GLOB);
         try s.emitByte(global);
     }
 
-    pub fn markInit(s: *Self) void {
-        if (s.current.scopeDepth == 0) return;
-        s.current.locals[s.current.localCount].depth = s.current.scopeDepth;
+    pub fn markInit(comp: *Compiler) void {
+        if (comp.scopeDepth == 0) return;
+        comp.locals[comp.localCount].depth = comp.scopeDepth;
     }
 
     pub fn parseVar(s: *Self, errmsg: [:0]const u8) !usize {
         try s.consume(.IDENT, errmsg);
         try s.declareVar();
-        if (s.current.scopeDepth > 0) return 0;
+        if (s.current.?.scopeDepth > 0) return 0;
         return try s.identConst(s.prev);
     }
 
     pub fn declareVar(s: *Self) !void {
-        if (s.current.scopeDepth == 0) return;
+        if (s.current.?.scopeDepth == 0) return;
 
         const name = s.prev;
 
-        for (s.current.locals[s.current.localCount..]) |local| {
-            if (local.depth != null and local.depth.? < s.current.scopeDepth) { // local.depth != -1
+        for (s.current.?.locals[s.current.?.localCount..]) |local| {
+            if (local.depth != null and local.depth.? < s.current.?.scopeDepth) { // local.depth != -1
                 break;
             }
 
@@ -151,15 +157,15 @@ pub const Parser = struct {
                 try s.displayErr(&local.name, "already a variable with this name in this scope");
             }
         }
-        try s.addLocal(name);
+        addLocal(s.current.?, name);
     }
 
-    pub fn addLocal(s: *Self, name: lx.Token) !void {
-        if (s.current.localCount == 0) {
-            try s.displayErr(&name, "too many local variables in function");
-        }
-        s.current.localCount -= 1;
-        const local = &s.current.locals[s.current.localCount];
+    pub fn addLocal(comp: *Compiler, name: lx.Token) void {
+        //if (comp.localCount == 0) {
+        //try s.displayErr(&name, "too many local variables in function");
+        //}
+        comp.localCount -= 1; // too many local variables in function
+        const local = &comp.locals[comp.localCount];
         local.* = .{
             .name = name,
             .depth = null,
@@ -207,7 +213,7 @@ pub const Parser = struct {
     }
 
     pub fn returnStmt(s: *Self) !void {
-        if (s.current.funcType == .SCRIPT) try s.displayErr(&s.prev, "cant return from top level code");
+        if (s.current.?.funcType == .SCRIPT) try s.displayErr(&s.prev, "cant return from top level code");
         if (s.mt(.SEMICOL)) {
             try s.emitReturn();
         } else {
@@ -306,21 +312,21 @@ pub const Parser = struct {
     }
 
     pub fn beginScope(s: *Self) !void {
-        s.current.scopeDepth += 1;
+        s.current.?.scopeDepth += 1;
     }
 
     pub fn endScope(s: *Self) !void {
-        s.current.scopeDepth -= 1;
+        s.current.?.scopeDepth -= 1;
 
-        for (s.current.locals[s.current.localCount..]) |local| {
+        for (s.current.?.locals[s.current.?.localCount..]) |local| {
             if (local.depth) |depth| {
-                if (depth <= s.current.scopeDepth) {
+                if (depth <= s.current.?.scopeDepth) {
                     break;
                 }
             }
 
             try s.emitOp(.POP);
-            s.current.localCount += 1;
+            s.current.?.localCount += 1;
         }
     }
 
@@ -413,11 +419,17 @@ pub const Parser = struct {
             getOp: lx.OpCode,
         };
 
-        const varb: Variable = if (try s.resolveLocal(name)) |loc| b: {
+        const varb: Variable = if (try resolveLocal(s.current.?, name)) |loc| b: {
             break :b .{
                 .arg = loc,
                 .setOp = .SET_LOCAL,
                 .getOp = .GET_LOCAL,
+            };
+        } else if (try resolveUpvalue(s.current.?, name)) |up| b: {
+            break :b .{
+                .arg = up,
+                .setOp = .SET_UPVAL,
+                .getOp = .GET_UPVAL,
             };
         } else b: {
             const arg = try s.identConst(name);
@@ -440,18 +452,54 @@ pub const Parser = struct {
         }
     }
 
-    pub fn resolveLocal(s: *Self, name: lx.Token) !?usize {
-        for (s.current.locals[s.current.localCount..], s.current.localCount..) |local, i| {
-            if (local.depth != null and local.depth.? < s.current.scopeDepth) { // local.depth != -1
+    pub fn resolveLocal(comp: *Compiler, name: lx.Token) !?usize {
+        std.debug.print("func: {?any}\n", .{comp.function.name});
+        std.debug.print("resolveLocal: {?s}\n", .{name.val});
+        std.debug.print("locals: {any}\n", .{comp.locals[comp.localCount..].len});
+        for (comp.locals[comp.localCount..], comp.localCount..) |local, i| {
+            if (local.depth != null and local.depth.? < comp.scopeDepth) { // local.depth != -1
                 break;
             }
 
             if (name.tp == local.name.tp and std.mem.eql(u8, name.val.?, local.name.val.?)) {
-                if (local.depth == null) try s.displayErr(&name, "cant read local variable from its own initializer");
+                if (local.depth == null) @panic("cant read local variable from its own initializer");
+                //if (local.depth == null) try s.displayErr(&name, "cant read local variable from its own initializer");
+                std.debug.print("idx: {any}\n", .{(maxInt(u8) - i) - 1});
                 return (maxInt(u8) - i) - 1;
             }
         }
         return null;
+    }
+
+    pub fn resolveUpvalue(comp: *Compiler, name: lx.Token) !?usize {
+        std.debug.print("resolve: {?s}\n", .{name.val});
+        return if (comp.enclosing) |enclosing|
+            if (try resolveLocal(enclosing, name)) |loc|
+                addUpValue(comp, loc, true)
+            else if (try resolveUpvalue(enclosing, name)) |uv|
+                addUpValue(comp, uv, false)
+            else
+                null
+        else
+            null;
+    }
+
+    pub fn addUpValue(comp: *Compiler, idx: usize, isLocal: bool) usize {
+        const nextSlot = comp.function.upValueCount;
+        for (comp.upvalues[0..nextSlot], 0..) |uv, i| {
+            if (uv.idx == idx and uv.isLocal == isLocal) {
+                return i;
+            }
+        }
+
+        const slot = &comp.upvalues[nextSlot];
+        slot.* = .{
+            .isLocal = isLocal,
+            .idx = idx,
+        };
+
+        comp.function.upValueCount += 1;
+        return nextSlot;
     }
 
     pub fn @"and"(s: *Self, _: bool) !void {
@@ -532,7 +580,7 @@ pub const Parser = struct {
     }
 
     pub fn curChunk(s: *Self) *lx.Chunk {
-        return s.current.function.chunk;
+        return s.current.?.function.chunk;
     }
 
     pub fn consume(s: *Self, tp: lx.TokenType, msg: [:0]const u8) !void {
@@ -635,13 +683,8 @@ pub const Parser = struct {
     pub fn endCompiler(s: *Self) !*lx.Func {
         if (s.finished) @panic("double end compiler");
         try s.emitReturn();
-        const func = s.current.function;
-        if (s.current.enclosing) |c| {
-            s.current = c;
-        } else {
-            s.finished = true;
-        }
-        //s.current = s.current.enclosing orelse undefined; // this should return exit the parser
+        const func = s.current.?.function;
+        s.current = s.current.?.enclosing; // this should return exit the parser
         return func;
     }
 
@@ -650,6 +693,7 @@ pub const Parser = struct {
         function: *lx.Func,
         funcType: FuncType,
         // array grows down
+        upvalues: [maxInt(u8)]Upvalue = [_]Upvalue{undefined} ** maxInt(u8),
         locals: [maxInt(u8)]Local = [_]Local{undefined} ** maxInt(u8),
         localCount: usize = maxInt(u8), // points to the last local or off the top/end of the array
         scopeDepth: usize = 0,
@@ -710,6 +754,11 @@ const Local = struct {
 pub const FuncType = enum {
     FUNC,
     SCRIPT,
+};
+
+const Upvalue = struct {
+    idx: usize,
+    isLocal: bool,
 };
 
 test Parser {
