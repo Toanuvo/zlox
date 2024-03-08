@@ -1,12 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const mem = @import("memory.zig");
-const Value = @import("value.zig").Value;
+const lx = @import("zlox.zig");
 const debug = @import("debug.zig");
-const OpCode = @import("vm.zig").OpCode;
 const Endianess = @import("builtin").cpu.arch.endian();
 
-const ValueArr = std.ArrayList(Value);
+const ValueArr = std.ArrayList(lx.Value);
 
 pub const Chunk = struct {
     code: []u8 = std.mem.zeroes([]u8),
@@ -34,17 +32,18 @@ pub const Chunk = struct {
 
     pub fn writeChunk(s: *Self, v: anytype, line: u64) !void {
         const byte: u8 = switch (@TypeOf(v)) {
-            OpCode => @intFromEnum(v),
+            lx.OpCode => @intFromEnum(v),
             usize => @intCast(v),
             bool => @intFromBool(v),
             else => {
                 @panic("cant write unknown type: " ++ @typeName(@TypeOf(v)));
             },
         };
+
         if (s.code.len < s.cap + 1) {
             const newCap = if (s.cap < 8) 8 else s.cap * 2;
-            s.code = try mem.realloc(s.alloc, s.code, newCap);
-            s.lines = try mem.realloc(s.alloc, s.lines, newCap);
+            s.code = try s.alloc.realloc(s.code, newCap);
+            s.lines = try s.alloc.realloc(s.lines, newCap);
         }
 
         //std.debug.print("write {any} {any}\n", .{ s.cap, v });
@@ -59,8 +58,8 @@ pub const Chunk = struct {
         const idx = offset orelse s.cap;
         if (s.code.len < idx + len) {
             const newCap = if (idx < 8) 8 else idx * 2;
-            s.code = try mem.realloc(s.alloc, s.code, newCap);
-            s.lines = try mem.realloc(s.alloc, s.lines, newCap);
+            s.code = try s.alloc.realloc(s.code, newCap);
+            s.lines = try s.alloc.realloc(s.lines, newCap);
         }
 
         const buf: *[@sizeOf(T)]u8 = @ptrCast(s.code[idx .. idx + len].ptr);
@@ -72,7 +71,8 @@ pub const Chunk = struct {
         if (offset == null) s.cap += len;
     }
 
-    pub fn addConst(s: *Self, v: Value) !usize {
+    pub fn addConst(s: *Self, v: lx.Value) !usize {
+        // todo fix gcing while appending
         //std.debug.dumpCurrentStackTrace(null);
         try s.vals.append(v);
         const idx = s.vals.items.len - 1;
@@ -84,7 +84,6 @@ pub const Chunk = struct {
         s.alloc.free(s.code);
         s.alloc.free(s.lines);
         s.vals.deinit();
-        // do i need to zero fields?
     }
 
     pub fn format(s: *Self, comptime _: []const u8, _: std.fmt.FormatOptions, stream: anytype) !void {
@@ -97,14 +96,3 @@ pub const Chunk = struct {
         }
     }
 };
-
-test Chunk {
-    const tup = .{ .RETURN, .ADD };
-    try tst(&tup);
-}
-
-fn tst(comptime ops: []const OpCode) !void {
-    for (ops) |value| {
-        std.debug.print("returned: {any}\n", .{value});
-    }
-}

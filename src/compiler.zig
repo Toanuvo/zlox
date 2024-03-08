@@ -12,25 +12,17 @@ pub const Parser = struct {
     scnr: *lx.Scanner = undefined,
     hadError: bool = false,
     panicMode: bool = false,
-    alloc: Allocator,
-    src: [:0]const u8,
-    vm: *lx.VM,
+    gc: *lx.GC,
     current: ?*Compiler = null,
 
     const Self = @This();
-    pub fn init(alloc: Allocator, vm: *lx.VM, src: [:0]const u8) !Self {
-        return .{
-            //.chunk = c,
-            .src = src,
-            .alloc = alloc,
-            .vm = vm,
-        };
-    }
 
-    pub fn compile(s: *Self) !*lx.Func {
+    pub fn compile(gc: *lx.GC, src: [:0]const u8) !*lx.Func {
+        var parser: Parser = .{ .gc = gc };
+        var s = &parser;
         var c: Compiler = undefined;
         try Compiler.init(s, &c, .SCRIPT);
-        var sc = lx.Scanner.init(s.alloc, s.src);
+        var sc: lx.Scanner = .{ .txt = src };
         s.scnr = &sc;
         s.advance();
 
@@ -61,7 +53,7 @@ pub const Parser = struct {
         try s.defineVar(glob);
     }
 
-    pub fn function(s: *Self, fnType: lx.FuncType) !void {
+    pub fn function(s: *Self, fnType: FuncType) !void {
         var compiler: Compiler = undefined;
         try Compiler.init(s, &compiler, fnType);
         try s.beginScope();
@@ -174,7 +166,8 @@ pub const Parser = struct {
     }
 
     pub fn identConst(s: *Self, name: lx.Token) !usize {
-        const str = try lx.String.allocString(s.vm, s.alloc, name.val.?);
+        //const str = try lx.String.alloclx.String(s.vm, s.alloc, name.val.?);
+        const str = try s.gc.create(lx.String, .{ .str = name.val.?, .canTake = false });
         return s.makeConst(.{ .Obj = &str.obj });
     }
 
@@ -457,9 +450,9 @@ pub const Parser = struct {
     }
 
     pub fn resolveLocal(comp: *Compiler, name: lx.Token, capture: bool) !?usize {
-        std.debug.print("func: {?any}\n", .{comp.function.name});
-        std.debug.print("resolveLocal: {?s}\n", .{name.val});
-        std.debug.print("locals: {any}\n", .{comp.locals[comp.localCount..].len});
+        //std.debug.print("func: {?any}\n", .{comp.function.name});
+        //std.debug.print("resolveLocal: {?s}\n", .{name.val});
+        //std.debug.print("locals: {any}\n", .{comp.locals[comp.localCount..].len});
         for (comp.locals[comp.localCount..], comp.localCount..) |*local, i| {
             if (local.depth != null and local.depth.? < comp.scopeDepth) { // local.depth != -1
                 break;
@@ -469,7 +462,6 @@ pub const Parser = struct {
                 if (local.depth == null) @panic("cant read local variable from its own initializer");
                 if (capture) local.isCaptured = true;
                 //if (local.depth == null) try s.displayErr(&name, "cant read local variable from its own initializer");
-                std.debug.print("idx: {any}\n", .{(maxInt(u8) - i) - 1});
                 return (maxInt(u8) - i) - 1;
             }
         }
@@ -477,7 +469,7 @@ pub const Parser = struct {
     }
 
     pub fn resolveUpvalue(comp: *Compiler, name: lx.Token) !?usize {
-        std.debug.print("resolve: {?s}\n", .{name.val});
+        //std.debug.print("resolve: {?s}\n", .{name.val});
         return if (comp.enclosing) |enclosing|
             if (try resolveLocal(enclosing, name, true)) |loc|
                 addUpValue(comp, loc, true)
@@ -544,7 +536,7 @@ pub const Parser = struct {
     }
 
     pub fn string(s: *Self, _: bool) !void {
-        var str = try lx.String.allocString(s.vm, s.alloc, s.prev.val.?);
+        var str = try s.gc.create(lx.String, .{ .str = s.prev.val.?, .canTake = false });
         try s.emitConst(.{ .Obj = &str.obj });
     }
 
@@ -707,12 +699,13 @@ pub const Parser = struct {
             c.* = .{
                 .enclosing = s.current,
                 .funcType = tp,
-                .function = try lx.Func.init(s.alloc, s.vm),
+                .function = try s.gc.create(lx.Func, {}),
             };
 
             s.current = c;
             if (c.funcType != .SCRIPT) {
-                c.function.name = try lx.String.allocString(s.vm, s.alloc, s.prev.val.?);
+                //c.function.name = try lx.String.alloclx.String(s.vm, s.alloc, s.prev.val.?);
+                c.function.name = try s.gc.create(lx.String, .{ .str = s.prev.val.?, .canTake = false });
             }
 
             c.localCount -= 1;
@@ -767,7 +760,3 @@ const Upvalue = struct {
     idx: usize,
     isLocal: bool,
 };
-
-test Parser {
-    std.debug.print("{any}\n", .{@sizeOf(u16)});
-}

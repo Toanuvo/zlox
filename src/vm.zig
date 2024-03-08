@@ -12,76 +12,49 @@ pub const RuntimeErrors = error{
 };
 
 pub const VM = struct {
-    alloc: Allocator,
+    gc: *lx.GC,
     //chunk: *lx.Chunk,
     //curFrame.ip: [*]u8 = undefined,
     sp: [*]lx.Value = undefined,
     objects: ?*lx.Obj,
-    strings: lx.StrMap,
-    globals: std.StringHashMap(lx.Value),
+    globals: lx.Table(lx.Value),
     stack: [StackMax]lx.Value = [_]lx.Value{lx.Value.Nil} ** StackMax,
     frames: [FRAME_MAX]CallFrame = [_]CallFrame{undefined} ** FRAME_MAX,
     frameCount: usize = 0,
     curFrame: *CallFrame = undefined,
     openUpValues: ?*lx.Upvalue = null,
+    writer: std.io.AnyWriter,
 
     const Self = @This();
-    pub fn init(alloc: Allocator) !*Self {
-        const s = try alloc.create(Self);
+    pub fn init(s: *Self, gc: *lx.GC, writer: std.io.AnyWriter) !void {
+        const alloc = gc.allocator();
         s.* = .{
-            .alloc = alloc,
-            //s.chunk = undefined;
+            .writer = writer,
+            .gc = gc,
             .objects = null,
-            .strings = lx.StrMap.init(alloc),
-            .globals = std.StringHashMap(lx.Value).init(alloc),
+            .globals = lx.Table(lx.Value).init(alloc),
         };
 
         s.resetStack();
-        try s.defineNative("clock", &VM.clockNative);
-
-        return s;
+        //try s.defineNative("clock", &VM.clockNative);
     }
 
     pub fn deinit(s: *Self) void {
-        while (s.objects) |objs| {
-            // todo fix string interining double free
-            var o = objs.*;
-            s.objects = objs.next;
-            inline for (comptime std.enums.values(lx.Type)) |t| {
-                if (o.tp == t) {
-                    o.as(t.as_type()).destroy(s.alloc);
-                }
-            }
+        var object = s.objects;
+        while (object) |obj| {
+            object = obj.next;
+            s.gc.freeObj(obj);
         }
-        s.strings.deinit();
+
         s.globals.deinit();
     }
 
-    pub fn touchObj(s: *Self, obj: *lx.Obj) void {
-        obj.next = s.objects;
-        s.objects = obj;
-    }
-
     pub fn interpret(s: *Self, src: [:0]const u8) !void {
-        var cp = try lx.Parser.init(s.alloc, s, src);
-        var cpp = &cp;
-        const func = try cpp.compile();
-
-        //const obj: *lx.Obj = &func.obj;
-        //std.debug.print("func: {any}\n", .{func.chunk});
-        //std.debug.print("obj: {any}\n", .{func.obj.tp});
-        //std.debug.print("obj: {any}\n", .{func.obj.next});
-        //std.debug.print("obj: {X}\n", .{@intFromPtr(s.sp)});
-
-        var o = s.objects;
-        while (o) |obj| {
-            //std.debug.print("val: {any}\n", .{obj});
-            o = obj.next;
-        }
+        const func = try lx.Parser.compile(s.gc, src);
 
         s.push(*lx.Obj, &func.obj);
         _ = s.pop();
-        const clos = try lx.Closure.init(s.alloc, func, s);
+        const clos = try s.gc.create(lx.Closure, func);
         s.push(*lx.Obj, &clos.obj);
         _ = s.call(clos, 0);
         try s.run();
@@ -92,11 +65,11 @@ pub const VM = struct {
         outer: while (true) {
             const instr: OpCode = @enumFromInt(s.incp());
 
-            std.debug.print("instr: {any}\n", .{instr});
-            //std.debug.print("stack: {any}\n", .{s.sp[0]});
+            //std.log.debug("instr: {any}\n", .{instr});
+            //std.log.debug("stack: {any}\n", .{s.sp[0]});
             switch (instr) {
                 .PRINT => {
-                    std.debug.print("{any}\n", .{s.pop()}); // todo stdio
+                    try s.writer.print("{any}\n", .{s.pop()});
                 },
                 .ADD => {
                     const a = s.peek(0);
@@ -117,7 +90,7 @@ pub const VM = struct {
                 inline .GTR, .LESS => |op| try s.binOp(op, .Bool),
                 .CONST => {
                     const con = s.readConst();
-                    //std.debug.print("const: {any}\n", .{con});
+                    //std.log.debug("const: {any}\n", .{con});
                     s.push(lx.Value, con);
                 },
                 .NEGATE => switch (s.peek(0)) {
@@ -150,25 +123,25 @@ pub const VM = struct {
                 .POP => _ = s.pop(),
                 .DEF_GLOB => {
                     const str = s.readConst().Obj.as(lx.String);
-                    try s.globals.put(str.chars, s.peek(0));
+                    try s.globals.put(str, s.peek(0));
                     _ = s.pop();
                 },
                 .SET_GLOB => {
                     const name = s.readConst().Obj.as(lx.String);
-                    if (s.globals.getPtr(name.chars)) |v| {
+                    if (s.globals.getPtr(name)) |v| {
                         v.* = s.peek(0);
                     } else {
                         try s.runtimeError("undefined global variable");
-                        std.debug.print(" {s}\n", .{name.chars});
+                        std.log.debug(" {s}\n", .{name.chars});
                     }
                 },
                 .GET_GLOB => {
                     const str = s.readConst().Obj.as(lx.String);
-                    if (s.globals.get(str.chars)) |v| {
+                    if (s.globals.get(str)) |v| {
                         s.push(lx.Value, v);
                     } else {
                         try s.runtimeError("undefind global variable");
-                        std.debug.print(" {s}\n", .{str.chars});
+                        std.log.debug(" {s}\n", .{str.chars});
                     }
                 },
                 .SET_LOCAL => {
@@ -181,12 +154,12 @@ pub const VM = struct {
                 },
                 .JMP_IF_FALSE => {
                     const offset = s.read(u16);
-                    //std.debug.print("read {any}\n", .{offset});
+                    //std.log.debug("read {any}\n", .{offset});
                     if (s.peek(0).isFalsey()) s.curFrame.ip += offset;
                 },
                 .JMP => {
                     const i = s.read(u16);
-                    //std.debug.print("read {any}\n", .{i});
+                    //std.log.debug("read {any}\n", .{i});
                     s.curFrame.ip += i;
                 },
                 .LOOP => {
@@ -194,7 +167,7 @@ pub const VM = struct {
                 },
                 .CLOSURE => {
                     const func = s.readConst().Obj.as(lx.Func);
-                    const clos = try lx.Closure.init(s.alloc, func, s);
+                    const clos = try s.gc.create(lx.Closure, func);
                     s.push(*lx.Obj, &clos.obj);
                     for (0..clos.upValues.len) |i| {
                         const isLocal = s.incp() == 1;
@@ -219,7 +192,7 @@ pub const VM = struct {
                 },
                 .CALL => {
                     const argCount = s.incp();
-                    //std.debug.print("args: {any}\n", .{argCount});
+                    //std.log.debug("args: {any}\n", .{argCount});
                     if (!s.callValue(s.peek(argCount), argCount)) {
                         @panic("runtime error");
                     }
@@ -258,7 +231,7 @@ pub const VM = struct {
                 return uv;
             };
 
-        const created = try lx.Upvalue.init(s.alloc, local, s);
+        const created = try s.gc.create(lx.Upvalue, local);
         created.next = upValue;
         if (prev) |p| {
             p.next = created;
@@ -294,7 +267,7 @@ pub const VM = struct {
                 }
             },
             inline else => |v, t| {
-                std.debug.print("{any}: {any}\n", .{ t, v });
+                std.log.debug("{any}: {any}\n", .{ t, v });
                 @panic("callee not an object");
             },
         }
@@ -307,8 +280,8 @@ pub const VM = struct {
             @panic("unexpected arg count");
         }
 
-        std.debug.print("== {s} ==\n", .{if (func.name) |n| n.chars else "SCRIPT"});
-        std.debug.print("{func}\n", .{clos.func.chunk});
+        //std.log.debug("== {s} ==\n", .{if (func.name) |n| n.chars else "SCRIPT"});
+        //std.log.debug("{func}\n", .{clos.func.chunk});
 
         if (s.frameCount == FRAME_MAX) @panic("stack overflow");
         s.curFrame = &s.frames[s.frameCount];
@@ -322,9 +295,9 @@ pub const VM = struct {
     }
 
     fn defineNative(s: *Self, name: []const u8, func: lx.NativeFn.NativeFnT) !void {
-        s.push(*lx.Obj, &(try lx.String.allocString(s, s.alloc, name)).obj);
-        s.push(*lx.Obj, &(try lx.NativeFn.init(s.alloc, s, func)).obj);
-        try s.globals.put(s.stack[0].Obj.as(lx.String).*.chars, s.stack[1]);
+        s.push(*lx.Obj, &(try s.gc.create(lx.String, .{ .str = name })).obj);
+        s.push(*lx.Obj, &(try s.gc.create(lx.NativeFn, func)).obj);
+        try s.globals.put(s.stack[0].Obj.as(lx.String), s.stack[1]);
         _ = s.pop();
         _ = s.pop();
     }
@@ -334,11 +307,13 @@ pub const VM = struct {
     }
 
     fn concat(s: *Self) !void {
-        const b = s.pop().Obj.as(lx.String).chars;
-        const a = s.pop().Obj.as(lx.String).chars;
+        const b = s.peek(0).Obj.as(lx.String).chars;
+        const a = s.peek(1).Obj.as(lx.String).chars;
 
-        const new = try std.mem.concatWithSentinel(s.alloc, u8, &[_][]const u8{ a, b }, 0);
-        const str = try lx.String.takeString(s.alloc, new);
+        const new = try std.mem.concatWithSentinel(s.gc.allocator(), u8, &[_][]const u8{ a, b }, 0);
+        const str = try s.gc.create(lx.String, .{ .str = new, .canTake = true });
+        _ = s.pop();
+        _ = s.pop();
         s.push(*lx.Obj, &str.obj);
     }
 
@@ -348,7 +323,7 @@ pub const VM = struct {
 
     fn binOp(s: *Self, op: lx.OpCode, comptime resType: lx.ValueTag) !void {
         if (!s.peek(0).is(.Num) or !s.peek(1).is(.Num)) {
-            std.debug.print("got type: {any}\n", .{s.peek(0)});
+            std.log.debug("got type: {any}\n", .{s.peek(0)});
             try s.runtimeError("operands must be numbers");
             // todo print stack trace
             return error.IncorrectOperandTypes;
@@ -377,7 +352,7 @@ pub const VM = struct {
     }
 
     fn readConst(s: *Self) lx.Value {
-        //std.debug.print("{*}\n", .{s.curFrame.clos.func.chunk});
+        //std.log.debug("{*}\n", .{s.curFrame.clos.func.chunk});
         return s.curFrame.clos.func.chunk.vals.items[s.incp()];
     }
 
@@ -399,8 +374,8 @@ pub const VM = struct {
     }
 
     fn push(s: *Self, comptime T: type, v: T) void {
-        //std.debug.print("val: {*}\n", .{&v});
-        //std.debug.print("val: {any}\n", .{v});
+        //std.log.debug("val: {*}\n", .{&v});
+        //std.log.debug("val: {any}\n", .{v});
         s.sp[0] = switch (T) {
             lx.Value => v,
             f64 => .{ .Num = v },
@@ -409,14 +384,14 @@ pub const VM = struct {
             lx.ValueTag => lx.Value{ .Nil = {} },
             //@TypeOf(.enum_literal), lx.ValueTag => @as(lx.Value, v), // should be nil
             else => |t| {
-                std.debug.print("got type: {any} for value: {any}\n", .{ t, v });
+                std.log.debug("got type: {any} for value: {any}\n", .{ t, v });
                 @panic("tried to push unexpected value type onto stack");
             },
         };
 
         // todo overflow
-        //std.debug.print("got type: {s}\n", .{@typeName(@TypeOf(v))});
-        //std.debug.print("setting: {any}\n", .{std.meta.activeTag(s.stack[S.spp])});
+        //std.log.debug("got type: {s}\n", .{@typeName(@TypeOf(v))});
+        //std.log.debug("setting: {any}\n", .{std.meta.activeTag(s.stack[S.spp])});
         s.sp += 1;
     }
 
@@ -480,44 +455,3 @@ pub const OpCode = enum(u8) {
     GTR,
     LESS,
 };
-
-test VM {
-    std.debug.print("\n", .{});
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = false }){};
-    const alloc = gpa.allocator();
-    defer _ = gpa.deinit();
-    var vm = try VM.init(alloc);
-    //defer vm.deinit();
-
-    //const tst = "!(5 - 4 > 3 * 2 == !nil)";
-    //const tst = "\"hello\"==\"hello\"";
-    //const tst = "print 1+1;";
-    //const tst =
-    //"var beverage = \"cafe au lait\";\n" ++
-    //"var breakfast = \"beignets\";\n" ++
-    //"if(true){\n" ++
-    //"for (var i = 0; i < 5; i = i + 1) {\n" ++
-    //"breakfast = \"beignets with \"+ beverage;\n" ++
-    //"print breakfast;}";
-
-    //"fun fib(n) {\n" ++
-    //"if (n < 2) return n;\n" ++
-    //"return fib(n - 2) + fib(n - 1); }\n" ++
-    //"var start = clock();\n" ++
-    //"print fib(10);\n" ++
-    //"print clock() - start;\n";
-    const tst =
-        "fun outer() {\n" ++
-        "var x = \"outside\";\n" ++
-        "fun inner() {\n" ++
-        "print x;\n}\n" ++
-        "inner();\n}\n" ++
-        "outer();";
-
-    //try vm.interpret("!(5 - 4 > 3 * 2 == !nil)");
-    //errdefer c.deinit();
-
-    //vm.curFrame.ip = c.code.ptr;
-    //vm.chunk = &c;
-    try vm.interpret(tst);
-}

@@ -2,19 +2,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const Scanner = struct {
-    alloc: Allocator,
     start: usize = 0,
     cur: usize = 0,
     line: u64 = 1,
     txt: [:0]const u8,
 
     const Self = @This();
-    pub fn init(alloc: Allocator, src: [:0]const u8) Self {
-        return .{
-            .alloc = alloc,
-            .txt = src,
-        };
-    }
 
     pub fn ntok(s: *Self) Token {
         s.skipws();
@@ -238,12 +231,20 @@ pub const TokenType = enum(u8) {
 };
 
 test "test scanner matches keywords" {
-    var sc = Scanner.init(std.testing.allocator, "false");
+    var sc: Scanner = .{ .txt = "false" };
     try std.testing.expectEqual(TokenType.FALSE, sc.ntok().tp);
 }
+
 test "scanner simple" {
-    var sc = Scanner.init(std.testing.allocator, "1 + 1");
+    var sc: Scanner = .{ .txt = "1 + 1" };
     try std.testing.expectEqual(TokenType.NUM, sc.ntok().tp);
     try std.testing.expectEqual(TokenType.PLUS, sc.ntok().tp);
     try std.testing.expectEqual(TokenType.NUM, sc.ntok().tp);
+}
+
+test "test scanner stores value" {
+    var sc: Scanner = .{ .txt = "\"hello\"" };
+    const tok = sc.ntok();
+    try std.testing.expectEqual(TokenType.STRING, tok.tp);
+    try std.testing.expectEqualStrings("hello", tok.val.?);
 }

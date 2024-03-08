@@ -19,6 +19,12 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    const eopt = b.addOptions();
+    exe.root_module.addOptions("GCopts", eopt);
+    eopt.addOption(bool, "debug", b.option(bool, "debug", "should gc print debug messages") orelse false);
+    eopt.addOption(bool, "stress", b.option(bool, "stress", "shoud gc be run as often as possible") orelse false);
+    eopt.addOption(u64, "GC_HEAP_GROW_FACTOR", b.option(u64, "GC_HEAP_GROW_FACTOR", "gc heap growth factor") orelse 2);
+
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
@@ -45,11 +51,12 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = "src/zlox.zig" },
         .target = target,
         .optimize = optimize,
     });
 
+    unit_tests.root_module.addOptions("GCopts", eopt);
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
