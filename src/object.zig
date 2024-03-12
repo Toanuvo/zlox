@@ -192,4 +192,44 @@ pub const Types = struct {
             return null;
         }
     };
+
+    pub const Class = struct {
+        obj: Obj = undefined,
+        name: *String,
+
+        const Self = @This();
+        pub fn init(
+            s: *Self,
+            _: *lx.GC,
+            name: *String,
+        ) !?*Self {
+            s.* = .{
+                .name = name,
+            };
+            return null;
+        }
+    };
+
+    pub const Instance = struct {
+        obj: Obj = undefined,
+        class: *Class,
+        fields: Table(lx.Value),
+
+        const Self = @This();
+        pub fn init(
+            s: *Self,
+            gc: *lx.GC,
+            class: *Class,
+        ) !?*Self {
+            s.* = .{
+                .class = class,
+                .fields = Table(lx.Value).init(gc.allocator()),
+            };
+            return null;
+        }
+
+        pub fn deinit(s: *Self, _: *lx.GC) void {
+            s.fields.deinit();
+        }
+    };
 };

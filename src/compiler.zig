@@ -36,7 +36,9 @@ pub const Parser = struct {
     }
 
     pub fn decl(s: *Self) anyerror!void {
-        if (s.mt(.FUN)) {
+        if (s.mt(.CLASS)) {
+            try s.classDecl();
+        } else if (s.mt(.FUN)) {
             try s.funDecl();
         } else if (s.mt(.VAR)) {
             try s.varDecl();
@@ -44,6 +46,19 @@ pub const Parser = struct {
             try s.stmt();
         }
         if (s.panicMode) s.sync();
+    }
+
+    pub fn classDecl(s: *Self) !void {
+        try s.consume(.IDENT, "expect class name");
+        const name = try s.identConst(s.prev);
+        try s.declareVar();
+
+        try s.emitOp(.CLASS);
+        try s.emitByte(name);
+        try s.defineVar(name);
+
+        try s.consume(.LBRACE, "expect {{ before class body");
+        try s.consume(.RBRACE, "expect }} after class body");
     }
 
     pub fn funDecl(s: *Self) !void {
@@ -535,6 +550,20 @@ pub const Parser = struct {
         }
     }
 
+    pub fn dot(s: *Self, canAssign: bool) !void {
+        try s.consume(.IDENT, "expect property name after '.'");
+        const name = try s.identConst(s.prev);
+
+        if (canAssign and s.mt(.EQL)) {
+            try s.expr();
+            try s.emitOp(.SET_PROP);
+            try s.emitByte(name);
+        } else {
+            try s.emitOp(.GET_PROP);
+            try s.emitByte(name);
+        }
+    }
+
     pub fn string(s: *Self, _: bool) !void {
         var str = try s.gc.create(lx.String, .{ .str = s.prev.val.?, .canTake = false });
         try s.emitConst(.{ .Obj = &str.obj });
@@ -674,6 +703,7 @@ pub const Parser = struct {
         rls.set(.IDENT, ParseRule.of(&Self.variable, null, .NONE));
         rls.set(.AND, ParseRule.of(null, &Self.@"and", .AND));
         rls.set(.OR, ParseRule.of(null, &Self.@"or", .OR));
+        rls.set(.DOT, ParseRule.of(null, &Self.dot, .CALL));
         break :blk rls;
     };
 

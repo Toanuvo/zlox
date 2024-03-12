@@ -1,21 +1,11 @@
-var f;
+class Pair {}
 
 
 
-fun foo(param) {
+var pair = Pair();
 
-  fun f_() {
+pair.first = 1;
 
-    print param;
+pair.second = 2;
 
-  }
-
-  f = f_;
-
-}
-
-foo("param");
-
-
-
-f(); // expect: param
+print pair.first + pair.second; // 3.

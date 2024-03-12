@@ -152,6 +152,28 @@ pub const VM = struct {
                     const slot: usize = s.incp();
                     s.push(lx.Value, s.curFrame.slots[slot]);
                 },
+                .SET_PROP => {
+                    const inst = s.peek(1).Obj.as(lx.Instance);
+                    const key = s.readConst().Obj.as(lx.String);
+                    try inst.fields.put(key, s.peek(0));
+
+                    const v = s.pop();
+                    _ = s.pop();
+                    s.push(lx.Value, v);
+                },
+                .GET_PROP => {
+                    if (!s.peek(0).Obj.is(lx.Instance))
+                        try s.runtimeError("only instances have properties");
+                    const inst = s.peek(0).Obj.as(lx.Instance);
+                    const name = s.readConst().Obj.as(lx.String);
+
+                    if (inst.fields.get(name)) |v| {
+                        _ = s.pop(); // instance
+                        s.push(lx.Value, v);
+                    } else {
+                        try s.runtimeError("undefined property");
+                    }
+                },
                 .JMP_IF_FALSE => {
                     const offset = s.read(u16);
                     //std.log.debug("read {any}\n", .{offset});
@@ -193,7 +215,7 @@ pub const VM = struct {
                 .CALL => {
                     const argCount = s.incp();
                     //std.log.debug("args: {any}\n", .{argCount});
-                    if (!s.callValue(s.peek(argCount), argCount)) {
+                    if (!(try s.callValue(s.peek(argCount), argCount))) {
                         @panic("runtime error");
                     }
                     s.curFrame = &s.frames[s.frameCount - 1];
@@ -202,6 +224,13 @@ pub const VM = struct {
                     const b = s.pop();
                     const a = s.pop();
                     s.push(bool, a.equals(b));
+                },
+                .CLASS => {
+                    const class = try s.gc.create(
+                        lx.Class,
+                        s.readConst().Obj.as(lx.String),
+                    );
+                    s.push(lx.Value, .{ .Obj = &class.obj });
                 },
                 //else => unreachable,
             }
@@ -250,12 +279,17 @@ pub const VM = struct {
         }
     }
 
-    fn callValue(s: *Self, callee: lx.Value, argCount: u8) bool {
+    fn callValue(s: *Self, callee: lx.Value, argCount: u8) !bool {
         switch (callee) {
             .Obj => |o| {
                 switch (o.tp) {
                     //.Func => return s.call(o.as(lx.Func), argCount),
                     .Closure => return s.call(o.as(lx.Closure), argCount),
+                    .Class => {
+                        const class = o.as(lx.Class);
+                        (s.sp - argCount - 1)[0] = .{ .Obj = &(try s.gc.create(lx.Instance, class)).obj };
+                        return true;
+                    },
                     .NativeFn => {
                         const native = o.as(lx.NativeFn).native;
                         const res = native(argCount, (s.sp - argCount)[0..argCount]);
@@ -433,6 +467,8 @@ pub const OpCode = enum(u8) {
     SET_LOCAL,
     GET_UPVAL,
     SET_UPVAL,
+    GET_PROP,
+    SET_PROP,
     JMP_IF_FALSE,
     JMP,
     CLOSURE,
@@ -454,4 +490,5 @@ pub const OpCode = enum(u8) {
     EQL,
     GTR,
     LESS,
+    CLASS,
 };

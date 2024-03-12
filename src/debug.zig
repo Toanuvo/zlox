@@ -55,9 +55,12 @@ pub fn dissInstr(s: *const Chunk, stream: anytype, offset: usize) !usize {
             .SET_LOCAL,
             => byteInstr(s, @tagName(op), stream, offset),
 
+            .CLASS,
             .DEF_GLOB,
             .GET_GLOB,
             .SET_GLOB,
+            .GET_PROP,
+            .SET_PROP,
             .CONST,
             => constInstr(s, @tagName(op), stream, offset),
 

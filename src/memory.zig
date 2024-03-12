@@ -174,6 +174,15 @@ pub fn freeObj(s: *GC, o: *lx.Obj) void {
             s.allocator().free(str.chars);
             s.allocator().destroy(str);
         },
+        .Class => {
+            const class = o.as(lx.Class);
+            s.allocator().destroy(class);
+        },
+        .Instance => {
+            const inst = o.as(lx.Instance);
+            inst.deinit(s);
+            s.allocator().destroy(inst);
+        },
     }
 }
 
@@ -259,7 +268,17 @@ fn blackenObj(s: *GC, o: *lx.Obj) void {
                 s.markValue(v);
             }
         },
+        .Class => s.markObj(o.as(lx.Class).name),
+        .Instance => {
+            const inst = o.as(lx.Instance);
+            s.markObj(inst.class);
+            var iter = inst.fields.valueIterator();
+            while (iter.next()) |field| {
+                s.markValue(field.*);
+            }
+        },
     }
+
     if (GCopts.debug) {
         std.debug.print("{*} blacken {}\n", .{ o, lx.Value{ .Obj = o } });
     }
