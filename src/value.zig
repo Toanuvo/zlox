@@ -52,8 +52,9 @@ pub const Value = union(ValueTag) {
                     .NativeFn => try writer.print("Native[{*}]", .{o.as(lx.NativeFn).native}),
                     .Closure => try writer.print("{}", .{o.as(lx.Closure).func}),
                     .Upvalue => try writer.print("upvalue", .{}),
-                    .Class => try writer.print("Class{{{}}}", .{o.as(lx.Class).name}),
-                    .Instance => try writer.print("Instance{{{}}}", .{o.as(lx.Instance).class.name}),
+                    inline else => |t| {
+                        try writer.print("Obj{{{*}}}", .{o.from(t)});
+                    },
                 }
             },
             .Bool => try writer.print("Bool: {any}", .{s.Bool}),

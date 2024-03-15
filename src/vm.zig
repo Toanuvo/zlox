@@ -24,16 +24,26 @@ pub const VM = struct {
     curFrame: *CallFrame = undefined,
     openUpValues: ?*lx.Upvalue = null,
     writer: std.io.AnyWriter,
+    initString: ?*lx.String = null,
 
     const Self = @This();
     pub fn init(s: *Self, gc: *lx.GC, writer: std.io.AnyWriter) !void {
         const alloc = gc.allocator();
+
         s.* = .{
             .writer = writer,
             .gc = gc,
             .objects = null,
             .globals = lx.Table(lx.Value).init(alloc),
         };
+
+        // create string after vm struct is created to avoid gc on partially
+        // initialized vm struct
+        gc.vm = s;
+        s.initString = try gc.create(lx.String, .{
+            .str = "init",
+            .canTake = false,
+        });
 
         s.resetStack();
         //try s.defineNative("clock", &VM.clockNative);
@@ -153,6 +163,8 @@ pub const VM = struct {
                     s.push(lx.Value, s.curFrame.slots[slot]);
                 },
                 .SET_PROP => {
+                    if (!s.peek(1).Obj.is(lx.Instance))
+                        try s.runtimeError("only instances have properties");
                     const inst = s.peek(1).Obj.as(lx.Instance);
                     const key = s.readConst().Obj.as(lx.String);
                     try inst.fields.put(key, s.peek(0));
@@ -170,7 +182,9 @@ pub const VM = struct {
                     if (inst.fields.get(name)) |v| {
                         _ = s.pop(); // instance
                         s.push(lx.Value, v);
-                    } else {
+                    }
+
+                    if (!(try s.bindMethod(inst.class, name))) {
                         try s.runtimeError("undefined property");
                     }
                 },
@@ -232,7 +246,16 @@ pub const VM = struct {
                     );
                     s.push(lx.Value, .{ .Obj = &class.obj });
                 },
-                //else => unreachable,
+                .METHOD => try s.defineMethod(s.readConst().Obj.as(lx.String)),
+                .INVOKE => {
+                    const m = s.readConst().Obj.as(lx.String);
+                    const argCount = s.incp();
+                    if (!(try s.invoke(m, argCount))) {
+                        try s.runtimeError("invoke");
+                    }
+
+                    s.curFrame = &s.frames[s.frameCount - 1];
+                },
             }
         }
     }
@@ -244,6 +267,52 @@ pub const VM = struct {
         const v = mem.readInt(T, s.curFrame.ip[0..@sizeOf(T)], Endianess);
         s.curFrame.ip += @sizeOf(T);
         return v;
+    }
+
+    fn invoke(s: *Self, name: *lx.String, argCount: u8) !bool {
+        const reciever = s.peek(argCount);
+        if (!reciever.Obj.is(lx.Instance)) {
+            try s.runtimeError("only instances have methods");
+            return false;
+        }
+        const inst = reciever.Obj.as(lx.Instance);
+
+        if (inst.fields.get(name)) |v| {
+            (s.sp - argCount - 1)[0] = v;
+            return try s.callValue(v, argCount);
+        } else {
+            return try s.invokeFromClass(inst.class, name, argCount);
+        }
+    }
+
+    fn invokeFromClass(s: *Self, class: *lx.Class, name: *lx.String, argCount: u8) !bool {
+        if (class.methods.get(name)) |m| {
+            return s.call(m.Obj.as(lx.Closure), argCount);
+        } else {
+            try s.runtimeError("undefind property");
+            return false;
+        }
+    }
+
+    fn bindMethod(s: *Self, class: *lx.Class, name: *lx.String) !bool {
+        const method = class.methods.get(name);
+
+        if (method) |m| {
+            const bound = try s.gc.create(lx.BoundMethod, .{ s.peek(0), m.Obj.as(lx.Closure) });
+            _ = s.pop();
+            s.push(lx.Value, .{ .Obj = &bound.obj });
+            return true;
+        } else {
+            try s.runtimeError("undefind property");
+            return false;
+        }
+    }
+
+    fn defineMethod(s: *Self, name: *lx.String) !void {
+        const method = s.peek(0);
+        const class = s.peek(1).Obj.as(lx.Class);
+        try class.methods.put(name, method);
+        _ = s.pop();
     }
 
     fn captureUpValue(s: *Self, local: *lx.Value) !*lx.Upvalue {
@@ -283,11 +352,21 @@ pub const VM = struct {
         switch (callee) {
             .Obj => |o| {
                 switch (o.tp) {
-                    //.Func => return s.call(o.as(lx.Func), argCount),
+                    .BoundMethod => {
+                        const bm = o.as(lx.BoundMethod);
+                        (s.sp - argCount - 1)[0] = bm.reciever;
+                        return s.call(bm.method, argCount);
+                    },
                     .Closure => return s.call(o.as(lx.Closure), argCount),
                     .Class => {
                         const class = o.as(lx.Class);
                         (s.sp - argCount - 1)[0] = .{ .Obj = &(try s.gc.create(lx.Instance, class)).obj };
+                        if (class.methods.get(s.initString.?)) |inzlr| {
+                            return s.call(inzlr.Obj.as(lx.Closure), argCount);
+                        } else if (argCount != 0) {
+                            try s.runtimeError("expected 0 arguments");
+                            return false;
+                        }
                         return true;
                     },
                     .NativeFn => {
@@ -491,4 +570,6 @@ pub const OpCode = enum(u8) {
     GTR,
     LESS,
     CLASS,
+    METHOD,
+    INVOKE,
 };

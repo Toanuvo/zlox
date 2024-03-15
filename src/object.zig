@@ -9,20 +9,20 @@ tp: Type,
 next: ?*Obj = null,
 isMarked: bool = false,
 
-pub inline fn as(s: *Obj, comptime t: type) *t {
-    return @fieldParentPtr(t, "obj", s);
-}
-
 pub fn format(s: *const Obj, comptime _: []const u8, _: std.fmt.FormatOptions, stream: anytype) !void {
     try stream.print("{{{any}, next: {?*}}}", .{ s.tp, s.next });
 }
 
-pub fn from(comptime T: Type) type {
-    return @field(Types, @tagName(T));
-}
-
 pub fn is(s: *Obj, comptime t: type) bool {
     return cast(t) == s.tp;
+}
+
+pub inline fn as(s: *Obj, comptime T: type) *T {
+    return @fieldParentPtr(T, "obj", s);
+}
+
+pub fn from(s: *Obj, comptime T: Type) *@field(Types, @tagName(T)) {
+    return @fieldParentPtr(@field(Types, @tagName(T)), "obj", s);
 }
 
 pub fn cast(comptime T: type) Type {
@@ -90,6 +90,7 @@ pub const Types = struct {
             var hh = ofHash(h);
             const hp = &hh;
 
+            // todo should String.chars be const?
             // todo protect string while inserting into intern table
             if (gc.strings.getKeyPtr(hp)) |string| {
                 if (canTake) gc.allocator().free(str);
@@ -196,17 +197,23 @@ pub const Types = struct {
     pub const Class = struct {
         obj: Obj = undefined,
         name: *String,
+        methods: Table(lx.Value),
 
         const Self = @This();
         pub fn init(
             s: *Self,
-            _: *lx.GC,
+            gc: *lx.GC,
             name: *String,
         ) !?*Self {
             s.* = .{
                 .name = name,
+                .methods = Table(lx.Value).init(gc.allocator()),
             };
             return null;
+        }
+
+        pub fn deinit(s: *Self, _: *lx.GC) void {
+            s.methods.deinit();
         }
     };
 
@@ -231,5 +238,29 @@ pub const Types = struct {
         pub fn deinit(s: *Self, _: *lx.GC) void {
             s.fields.deinit();
         }
+    };
+
+    pub const BoundMethod = struct {
+        obj: Obj = undefined,
+        reciever: lx.Value,
+        method: *Closure,
+
+        const Self = @This();
+        pub fn init(
+            s: *Self,
+            _: *lx.GC,
+            args: struct { lx.Value, *Closure },
+        ) !?*Self {
+            const reciever = args[0];
+            const method = args[1];
+
+            s.* = .{
+                .reciever = reciever,
+                .method = method,
+            };
+            return null;
+        }
+
+        pub fn deinit(_: *Self, _: *lx.GC) void {}
     };
 };

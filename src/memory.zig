@@ -170,18 +170,14 @@ pub fn freeObj(s: *GC, o: *lx.Obj) void {
             s.allocator().destroy(func);
         },
         .String => {
-            const str = o.as(lx.Obj.from(.String));
+            const str = o.as(lx.String);
             s.allocator().free(str.chars);
             s.allocator().destroy(str);
         },
-        .Class => {
-            const class = o.as(lx.Class);
-            s.allocator().destroy(class);
-        },
-        .Instance => {
-            const inst = o.as(lx.Instance);
-            inst.deinit(s);
-            s.allocator().destroy(inst);
+        inline else => |t| {
+            const obj = o.from(t);
+            obj.deinit(s);
+            s.allocator().destroy(obj);
         },
     }
 }
@@ -203,6 +199,8 @@ pub fn markRoots(s: *GC, vm: *lx.VM) void {
         s.markObj(uv);
         upvalue = uv.next;
     }
+
+    if (s.vm.initString) |str| s.markObj(str);
 
     // todo compiler roots
     //s.markCompilerRoots();
@@ -268,7 +266,14 @@ fn blackenObj(s: *GC, o: *lx.Obj) void {
                 s.markValue(v);
             }
         },
-        .Class => s.markObj(o.as(lx.Class).name),
+        .Class => {
+            const class = o.as(lx.Class);
+            s.markObj(class.name);
+            var iter = class.methods.valueIterator();
+            while (iter.next()) |method| {
+                s.markValue(method.*);
+            }
+        },
         .Instance => {
             const inst = o.as(lx.Instance);
             s.markObj(inst.class);
@@ -276,6 +281,11 @@ fn blackenObj(s: *GC, o: *lx.Obj) void {
             while (iter.next()) |field| {
                 s.markValue(field.*);
             }
+        },
+        .BoundMethod => {
+            const bm = o.as(lx.BoundMethod);
+            s.markValue(bm.reciever);
+            s.markObj(bm.method);
         },
     }
 

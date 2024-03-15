@@ -14,6 +14,7 @@ pub const Parser = struct {
     panicMode: bool = false,
     gc: *lx.GC,
     current: ?*Compiler = null,
+    currentClass: ?*ClassCompiler = null,
 
     const Self = @This();
 
@@ -50,15 +51,41 @@ pub const Parser = struct {
 
     pub fn classDecl(s: *Self) !void {
         try s.consume(.IDENT, "expect class name");
-        const name = try s.identConst(s.prev);
+        const name = s.prev;
+        const nameId = try s.identConst(s.prev);
         try s.declareVar();
 
         try s.emitOp(.CLASS);
-        try s.emitByte(name);
-        try s.defineVar(name);
+        try s.emitByte(nameId);
+        try s.defineVar(nameId);
+
+        var cc = ClassCompiler{ .enclosing = s.currentClass };
+        s.currentClass = &cc;
+
+        try s.namedVar(name, false);
 
         try s.consume(.LBRACE, "expect {{ before class body");
+        while (s.cur.tp != .RBRACE and s.cur.tp != .EOF) {
+            try s.method();
+        }
         try s.consume(.RBRACE, "expect }} after class body");
+        try s.emitOp(.POP);
+
+        s.currentClass = s.currentClass.?.enclosing;
+    }
+
+    pub fn method(s: *Self) !void {
+        try s.consume(.IDENT, "expect method name");
+        const id = try s.identConst(s.prev);
+
+        const ftp = if (std.mem.eql(u8, "init", s.prev.val.?))
+            FuncType.INITIALIZER
+        else
+            FuncType.METHOD;
+
+        try s.function(ftp);
+        try s.emitOp(.METHOD);
+        try s.emitByte(id);
     }
 
     pub fn funDecl(s: *Self) !void {
@@ -226,6 +253,8 @@ pub const Parser = struct {
         if (s.mt(.SEMICOL)) {
             try s.emitReturn();
         } else {
+            if (s.current.?.funcType == .INITIALIZER)
+                try s.displayErr(&s.prev, "cant return a value from an initializer");
             try s.expr();
             try s.consume(.SEMICOL, "expect ; after return value");
             try s.emitOp(.RETURN);
@@ -558,9 +587,22 @@ pub const Parser = struct {
             try s.expr();
             try s.emitOp(.SET_PROP);
             try s.emitByte(name);
+        } else if (s.mt(.LPAR)) {
+            const argCount = try s.argList();
+            try s.emitOp(.INVOKE);
+            try s.emitByte(name);
+            try s.emitByte(argCount);
         } else {
             try s.emitOp(.GET_PROP);
             try s.emitByte(name);
+        }
+    }
+
+    pub fn this(s: *Self, _: bool) !void {
+        if (s.currentClass == null) {
+            try s.displayErr(&s.prev, "cant use 'this' outside of class");
+        } else {
+            try s.variable(false);
         }
     }
 
@@ -601,7 +643,12 @@ pub const Parser = struct {
     }
 
     pub fn emitReturn(s: *Self) !void {
-        try s.emitOp(.NIL);
+        if (s.current.?.funcType == .INITIALIZER) {
+            try s.emitOp(.GET_LOCAL);
+            try s.emitByte(@as(usize, 0));
+        } else {
+            try s.emitOp(.NIL);
+        }
         try s.emitOp(.RETURN);
     }
 
@@ -704,6 +751,7 @@ pub const Parser = struct {
         rls.set(.AND, ParseRule.of(null, &Self.@"and", .AND));
         rls.set(.OR, ParseRule.of(null, &Self.@"or", .OR));
         rls.set(.DOT, ParseRule.of(null, &Self.dot, .CALL));
+        rls.set(.THIS, ParseRule.of(&Self.this, null, .NONE));
         break :blk rls;
     };
 
@@ -714,6 +762,10 @@ pub const Parser = struct {
         s.current = s.current.?.enclosing; // this should return exit the parser
         return func;
     }
+
+    const ClassCompiler = struct {
+        enclosing: ?*ClassCompiler,
+    };
 
     const Compiler = struct {
         enclosing: ?*Compiler,
@@ -742,8 +794,8 @@ pub const Parser = struct {
             c.locals[c.localCount] = .{
                 .isCaptured = false,
                 .name = .{
-                    .tp = .ERROR,
-                    .val = "ZERO LOCAL",
+                    .tp = if (tp != .FUNC) .STRING else .ERROR,
+                    .val = if (tp != .FUNC) "this" else "ERROR",
                     .line = maxInt(u64),
                 },
                 .depth = 0,
@@ -784,6 +836,8 @@ const Local = struct {
 pub const FuncType = enum {
     FUNC,
     SCRIPT,
+    METHOD,
+    INITIALIZER,
 };
 
 const Upvalue = struct {

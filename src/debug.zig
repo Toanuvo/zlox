@@ -55,6 +55,7 @@ pub fn dissInstr(s: *const Chunk, stream: anytype, offset: usize) !usize {
             .SET_LOCAL,
             => byteInstr(s, @tagName(op), stream, offset),
 
+            .METHOD,
             .CLASS,
             .DEF_GLOB,
             .GET_GLOB,
@@ -63,6 +64,8 @@ pub fn dissInstr(s: *const Chunk, stream: anytype, offset: usize) !usize {
             .SET_PROP,
             .CONST,
             => constInstr(s, @tagName(op), stream, offset),
+
+            .INVOKE => invokeInstr(s, @tagName(op), stream, offset),
 
             .CLOSURE => b: {
                 var off = offset + 1;
@@ -109,4 +112,13 @@ fn simpleInstr(s: *const Chunk, name: []const u8, stream: anytype, offset: usize
     _ = s;
     try stream.print("{s}\n", .{name});
     return offset + 1;
+}
+
+fn invokeInstr(s: *const Chunk, name: []const u8, stream: anytype, offset: usize) !usize {
+    const idx = s.code[offset + 1];
+    const argCount = s.code[offset + 2];
+
+    try stream.print("{s: <16} ({d} args) {d:0>4} '{}'\n", .{ name, argCount, idx, s.vals.items[idx] });
+
+    return offset + 3;
 }
